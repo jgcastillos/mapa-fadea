@@ -1,7 +1,7 @@
 /* Service worker: guarda la app y los datos para uso 100% offline.
    Los mosaicos del mapa base (otro origen) los administra la propia app en Cache Storage. */
-const VERSION = "papa-shell-v1";
-const SHELL = ["./", "index.html", "style.css", "app.js", "geo.js", "config.js", "data.json",
+const VERSION = "papa-shell-v2";
+const SHELL = ["./", "index.html", "style.css", "app.js", "geo.js", "nav.js", "config.js", "data.json", "nav.json",
   "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {

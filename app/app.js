@@ -27,6 +27,7 @@ const LAYERS = [
   { id: "se",   name: "Salidas de emergencia", color: "#15803d" },
   { id: "hosp", name: "Hospitales",            color: "#7f1d1d" },
   { id: "acc",  name: "Ingresos",              color: "#0369a1" },
+  { id: "pas",  name: "Pasillos y calle peatonal", color: "#0f766e" },
   { id: "base", name: "Mapa base (calles)",    color: "#94a3b8" },
 ];
 const POLY_DRAW = ["ingreso", "frente", "cuadrante", "clero", "autoridades", "sector", "escenario"];
@@ -47,9 +48,9 @@ let data = null, feats = [];
 let W = 0, H = 0, dpr = 1;
 const view = { cx: 0, cy: 0, z: 15 };
 let minZ = 13, maxZ = 20, fitZ = 15, wbox = null, bounds = null;
-let sel = null, route = null, pendingFrom = null;
+let sel = null, route = null, pendingFrom = null, nav = null, navView = null;
 let pos = null, watchId = null, follow = false, heading = null, compassOn = false;
-let layersOn = { cuad: 1, esc: 1, ps: 1, se: 1, hosp: 1, acc: 1, base: 1 };
+let layersOn = { cuad: 1, esc: 1, ps: 1, se: 1, hosp: 1, acc: 1, pas: 1, base: 1 };
 try { Object.assign(layersOn, JSON.parse(localStorage.getItem("papa.layers") || "{}")); } catch (e) {}
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -269,6 +270,7 @@ function draw() {
     drawTiles(S);
     ctx.fillStyle = "rgba(255,255,255,.18)"; ctx.fillRect(0, 0, W, H);
   }
+  drawPasillos(S);
   // polígonos
   for (const t of POLY_DRAW) {
     if (!layersOn[TYPES[t].layer]) continue;
@@ -310,22 +312,44 @@ function draw() {
   drawUser(S);
   if (layersOn.base) { halo(C.TILE_ATTRIBUTION, 62, H - 8, 10, "#475569", 500); }
 }
+function drawPasillos(S) {
+  if (!navView || !layersOn.pas) return;
+  ctx.beginPath();
+  for (const ring of navView.fenceW) { ring.forEach((p, i) => { const x = sx(p[0], S), y = sy(p[1], S); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath(); }
+  ctx.fillStyle = "rgba(255,255,255,.62)"; ctx.fill("evenodd");
+  ctx.setLineDash([10, 7]); ctx.lineWidth = 2; ctx.strokeStyle = "#0f766e"; ctx.stroke(); ctx.setLineDash([]);
+  const ppm = (256 * S) / (40075016.686 * Math.cos((bounds[1] + bounds[3]) / 2 * Math.PI / 180));
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.beginPath(); navView.calleW.forEach((p, i) => { const x = sx(p[0], S), y = sy(p[1], S); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.lineWidth = navView.calleM * ppm; ctx.strokeStyle = "rgba(34,197,94,.30)"; ctx.stroke();
+  ctx.lineWidth = 1.5; ctx.setLineDash([6, 6]); ctx.strokeStyle = "#15803d"; ctx.stroke(); ctx.setLineDash([]);
+  if (view.z >= 14.8) { const m = navView.calleW[2]; halo("CALLE PEATONAL (aprox.)", sx(m[0], S), sy(m[1], S) - Math.max(14, navView.calleM * ppm / 2 + 8), 11, "#14532d"); }
+}
 function drawRoute(S) {
-  if (!route) return;
-  const o = originLL(); if (!o) return;
-  const a = G.project(o[0], o[1], 0), b = route.to.cw;
-  const ax = sx(a[0], S), ay = sy(a[1], S), bx = sx(b[0], S), by = sy(b[1], S);
-  ctx.lineCap = "round"; ctx.setLineDash([12, 9]);
-  ctx.lineWidth = 7; ctx.strokeStyle = "#fff"; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-  ctx.lineWidth = 4; ctx.strokeStyle = "#2563eb"; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-  ctx.setLineDash([]);
-  const ang = Math.atan2(by - ay, bx - ax), mx = (ax + bx) / 2, my = (ay + by) / 2;
-  if (Math.hypot(bx - ax, by - ay) > 60) {
-    ctx.save(); ctx.translate(mx, my); ctx.rotate(ang); ctx.fillStyle = "#2563eb"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(-7, -8); ctx.lineTo(-7, 8); ctx.closePath(); ctx.stroke(); ctx.fill(); ctx.restore();
+  const r = route && route.res; if (!r || !r.ok) return;
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const seg of r.segs) {
+    ctx.beginPath(); seg.pts.forEach((p, i) => { const q = G.project(p[0], p[1], 0), x = sx(q[0], S), y = sy(q[1], S); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    if (seg.kind === "net") { ctx.setLineDash([]); ctx.lineWidth = 9; ctx.strokeStyle = "#fff"; ctx.stroke(); ctx.lineWidth = 5; ctx.strokeStyle = "#2563eb"; ctx.stroke(); }
+    else { ctx.setLineDash([4, 10]); ctx.lineWidth = 6; ctx.strokeStyle = "#fff"; ctx.stroke(); ctx.lineWidth = 3.5; ctx.strokeStyle = seg.kind === "exit" ? "#ea580c" : "#475569"; ctx.stroke(); ctx.setLineDash([]); }
   }
-  ctx.beginPath(); ctx.arc(bx, by, 24, 0, 6.2832); ctx.lineWidth = 4; ctx.strokeStyle = "#2563eb"; ctx.stroke();
-  if (route.from) { ctx.beginPath(); ctx.arc(ax, ay, 8, 0, 6.2832); ctx.fillStyle = "#16a34a"; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.stroke(); }
+  // flechitas de sentido sobre los tramos de red
+  for (const seg of r.segs) {
+    if (seg.kind !== "net") continue;
+    for (let i = 0; i + 1 < seg.pts.length; i++) {
+      const a = G.project(seg.pts[i][0], seg.pts[i][1], 0), b = G.project(seg.pts[i + 1][0], seg.pts[i + 1][1], 0);
+      const ax = sx(a[0], S), ay = sy(a[1], S), bx = sx(b[0], S), by = sy(b[1], S), len = Math.hypot(bx - ax, by - ay);
+      if (len < 70) continue;
+      for (let t = 0.5; t < 1; t += 1) { const n = Math.floor(len / 140); for (let k = 0; k <= n; k++) {
+        const f = n ? (k + 0.5) / (n + 1) : 0.5, mx = ax + (bx - ax) * f, my = ay + (by - ay) * f;
+        ctx.save(); ctx.translate(mx, my); ctx.rotate(Math.atan2(by - ay, bx - ax)); ctx.fillStyle = "#fff"; ctx.strokeStyle = "#1d4ed8"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-5, -6); ctx.lineTo(-5, 6); ctx.closePath(); ctx.stroke(); ctx.fill(); ctx.restore(); } break; }
+    }
+  }
+  const e = G.project(r.end[0], r.end[1], 0), ex = sx(e[0], S), ey = sy(e[1], S);
+  ctx.beginPath(); ctx.arc(ex, ey, 9, 0, 6.2832); ctx.fillStyle = "#dc2626"; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.stroke();
+  ctx.beginPath(); ctx.arc(ex, ey, 22, 0, 6.2832); ctx.lineWidth = 3; ctx.strokeStyle = "#2563eb"; ctx.stroke();
+  if (route.from) { const a = G.project(r.start[0], r.start[1], 0); ctx.beginPath(); ctx.arc(sx(a[0], S), sy(a[1], S), 8, 0, 6.2832); ctx.fillStyle = "#16a34a"; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.stroke(); }
 }
 function drawUser(S) {
   if (!pos) return;
@@ -415,6 +439,7 @@ function renderSheet() {
   else if (f.capref) h += `<div class="kv">Capacidad: <b>≈ ${fmtN(f.capref)} personas</b> (promedio del plano) · ${fmtN(f.area)} m²</div>`;
   else if (f.area && f.t === "sector") h += `<div class="kv">Superficie: <b>${fmtN(f.area)} m²</b></div>`;
   if (pos) { const d = G.distance(pos.ll, f.ll); h += `<div class="kv">A <b>${G.fmtDist(d)}</b> de vos · ${G.fmtTime(d, C.WALK_SPEED)} a pie</div>`; }
+  if (f.t === "clero" || f.t === "autoridades") h += `<div class="warn">Zona de acceso restringido.</div>`;
   if (f.nota) h += `<div class="warn">${esc(f.nota)} Revisá con el equipo de datos.</div>`;
   const kinds = { ps: ["se", "hosp"], se: ["ps", "hosp"], hosp: ["ps", "se"], acc: ["ps", "hosp"] }[f.t] || ["ps", "se"];
   const rows = kinds.map((k) => nearest(k, f.ll, f)).filter(Boolean);
@@ -440,43 +465,81 @@ function share(f) {
   else toast(url, 8000);
 }
 
-/* ---------- Rutas (línea recta, rumbo y distancia) ---------- */
+/* ---------- Rutas por pasillos ---------- */
+let ingresoMode = "auto";
+try { ingresoMode = localStorage.getItem("papa.ingreso") || "auto"; } catch (e) {}
+const INGRESO_LABEL = { auto: "Ingreso: automático", N: "Ingreso: Norte (invitación)", S: "Ingreso: Sur" };
+let lastCalc = null, calcT = 0;
+
 function originLL() { return route ? (route.from ? route.from.ll : pos ? pos.ll : null) : null; }
+function recalc(force) {
+  if (!route || !nav) return;
+  const o = originLL(); if (!o) { route.res = null; return; }
+  const now = performance.now();
+  if (!force && route.res && lastCalc && G.distance(lastCalc, o) < 4 && now - calcT < 5000) return;
+  lastCalc = o; calcT = now;
+  try { route.res = nav.route(o, route.to, { ingreso: ingresoMode }); }
+  catch (e) { route.res = { ok: false, msg: "Error calculando la ruta." }; }
+}
 function goTo(f) {
+  if (!nav) { toast("Todavía se está cargando la red de pasillos…"); return; }
   if (pendingFrom && pendingFrom !== f) { route = { to: f, from: pendingFrom, arrived: false }; pendingFrom = null; }
-  else if (pos) route = { to: f, from: null, arrived: false };
-  else { route = { to: f, from: null, arrived: false }; startGPS(); toast("Esperando señal GPS… (o usá «Salir desde acá» en tu punto de partida)", 5000); }
-  updateHud(); invalidate();
-  if (originLL()) fitRoute();
+  else { route = { to: f, from: null, arrived: false }; if (!pos) { startGPS(); toast("Esperando señal GPS… (o usá «Salir desde acá» en tu punto de partida)", 5000); } }
+  recalc(true); updateHud(); invalidate();
+  if (route.res && route.res.ok) fitRoute();
 }
 function fitRoute() {
-  const o = originLL(); if (!o || !route) return;
-  const a = G.project(o[0], o[1], 0), b = route.to.cw;
-  const dx = Math.abs(a[0] - b[0]) + 1e-9, dy = Math.abs(a[1] - b[1]) + 1e-9;
-  const z = clamp(Math.log2(Math.min((W * 0.7) / dx, (H * 0.4) / dy)), minZ, 18.5);
-  animateTo({ cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2 + (H * 0.12) / Math.pow(2, z), z });
+  const r = route && route.res; if (!r || !r.ok) return;
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  const o = originLL();
+  const pts = [];
+  r.segs.forEach((s) => s.kind !== "out" && s.pts.forEach((p) => pts.push(p)));   // el tramo exterior puede ser larguísimo
+  if (!pts.length) return;
+  for (const p of pts) { const q = G.project(p[0], p[1], 0); x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }
+  const dx = Math.max(x1 - x0, 1e-7), dy = Math.max(y1 - y0, 1e-7);
+  const z = clamp(Math.log2(Math.min((W * 0.8) / dx, (H * 0.42) / dy)), minZ, 18.5);
+  animateTo({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 + (H * 0.1) / Math.pow(2, z), z });
 }
 function currentHeading() { return heading != null ? heading : pos && pos.gh != null ? pos.gh : null; }
 function updateHud() {
   const hud = $("#hud");
-  if (!route) { hud.hidden = true; layout(); return; }
+  if (!route) { hud.hidden = true; $("#steps").hidden = true; layout(); return; }
   hud.hidden = false;
   $("#hudTitle").textContent = "Hacia " + titleOf(route.to);
-  const o = originLL();
+  const ing = $("#hudIngreso"), o = originLL();
   if (!o) {
     $("#hudDist").textContent = "Buscando GPS…"; $("#hudNote").textContent = "Activá la ubicación del dispositivo";
-    $("#arrow").style.opacity = ".3"; layout(); return;
+    $("#arrow").style.opacity = ".3"; ing.hidden = true; layout(); return;
   }
-  const d = G.distance(o, route.to.ll), b = G.bearing(o, route.to.ll), dir = route.from ? null : currentHeading();
-  $("#arrow").style.opacity = "1"; $("#arrow").style.transform = `rotate(${Math.round(b - (dir || 0) - 90)}deg)`;
-  const arrived = !route.from && d < C.ARRIVE_M;
-  $("#hudDist").textContent = arrived ? "¡Llegaste!" : G.fmtDist(d) + " · " + G.fmtTime(d, C.WALK_SPEED);
-  $("#hudNote").textContent = (route.from ? "Desde " + titleOf(route.from) + " · " : "") + G.cardinal(b) + " · " +
-    (dir != null || route.from ? "" : "flecha respecto al norte · ") + "línea recta, respetá pasillos y vallas";
+  recalc(false);
+  const r = route.res;
+  if (!r || !r.ok) { $("#hudDist").textContent = "Sin ruta"; $("#hudNote").textContent = (r && r.msg) || ""; $("#arrow").style.opacity = ".3"; ing.hidden = true; layout(); return; }
+  ing.hidden = !r.outside && !(route.from && r.gate); ing.textContent = INGRESO_LABEL[ingresoMode] + " ▾";
+  const s0 = r.steps[0], s1 = r.steps[1], dir = route.from ? null : currentHeading();
+  const arrived = !route.from && r.dist < C.ARRIVE_M;
+  $("#arrow").style.opacity = "1";
+  if (s0 && s0.bearing != null) $("#arrow").style.transform = `rotate(${Math.round(s0.bearing - (dir || 0) - 90)}deg)`;
+  if (arrived) $("#hudDist").textContent = "¡Llegaste!";
+  else if (!s1 || s1.final) $("#hudDist").textContent = (s0 && s0.dist ? G.fmtDist(s0.dist) + " · " : "") + r.steps[r.steps.length - 1].action;
+  else $("#hudDist").textContent = "En " + G.fmtDist(s0.dist) + ": " + s1.action.charAt(0).toLowerCase() + s1.action.slice(1);
+  const tail = "Total " + G.fmtDist(r.dist) + " · " + Math.max(1, Math.round(r.secs / 60)) + " min";
+  $("#hudNote").textContent = (route.from ? "Desde " + titleOf(route.from) + " · " : "") + (s0 && s0.kind !== "end" ? s0.place + " · " : "") + tail;
   if (arrived && !route.arrived) { route.arrived = true; if (navigator.vibrate) navigator.vibrate([200, 100, 200]); toast("¡Llegaste a " + titleOf(route.to) + "!"); }
-  layout();
+  renderSteps(); layout();
 }
-$("#hudClose").onclick = () => { route = null; pendingFrom = null; updateHud(); invalidate(); };
+function renderSteps() {
+  const r = route && route.res; if (!r || !r.ok) return;
+  const T = (f) => (f.t === "clero" || f.t === "autoridades") ? "<li class='warn'>Zona de acceso restringido (" + esc(TYPES[f.t].label) + ").</li>" : "";
+  $("#stepList").innerHTML = T(route.to) + r.notes.map((n) => `<li class="warn">${esc(n)}</li>`).join("") +
+    r.steps.map((s, i) => `<li class="st ${s.kind}"><span class="n">${s.final ? "★" : i + 1}</span><span>${esc(s.action)}${s.dist ? `<small>${G.fmtDist(s.dist)} ${esc(s.place || "")}</small>` : ""}</span></li>`).join("");
+}
+$("#hudClose").onclick = () => { route = null; pendingFrom = null; $("#steps").hidden = true; updateHud(); invalidate(); };
+$("#hudSteps").onclick = () => { const h = !$("#steps").hidden; closePanels(); if (!h) { renderSteps(); $("#steps").hidden = false; } };
+$("#hudIngreso").onclick = () => {
+  ingresoMode = ingresoMode === "auto" ? "N" : ingresoMode === "N" ? "S" : "auto";
+  try { localStorage.setItem("papa.ingreso", ingresoMode); } catch (e) {}
+  recalc(true); updateHud(); invalidate(); fitRoute(); toast(INGRESO_LABEL[ingresoMode] + (ingresoMode === "N" ? " · los invitados siempre entran por el Norte" : ""));
+};
 
 /* ---------- GPS y brújula ---------- */
 function setFollow(v) { follow = v; $("#btnLocate").classList.toggle("follow", v); }
@@ -568,7 +631,7 @@ document.querySelectorAll("#chips button").forEach((b) => b.addEventListener("cl
 }));
 
 /* ---------- Paneles ---------- */
-function closePanels() { $("#layers").hidden = true; $("#info").hidden = true; }
+function closePanels() { $("#layers").hidden = true; $("#info").hidden = true; $("#steps").hidden = true; }
 document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = closePanels));
 $("#btnLayers").onclick = () => { const h = !$("#layers").hidden; closePanels(); if (!h) { $("#layers").hidden = false; refreshOffState(); } };
 $("#btnInfo").onclick = () => { const h = !$("#info").hidden; closePanels(); if (!h) $("#info").hidden = false; };
@@ -606,7 +669,7 @@ function buildInfo() {
     <div class="row"><span class="badge" style="background:#15803d;margin:0">SE</span><label>Salida de emergencia</label></div>
     <div class="row"><span class="badge" style="background:#7f1d1d;margin:0">H</span><label>Hospital modular / de pronta atención</label></div>
     <h2>Importante</h2>
-    <p class="small">• La guía hacia un punto es en <b>línea recta</b> (rumbo y distancia): todavía no incluye pasillos, vallas ni sentidos de circulación.<br>
+    <p class="small">• La ruta va <b>por los pasillos</b>: los cuadrantes solo se cruzan si estás adentro o es tu destino. Papa Fest (L–P) se alcanza por el Ingreso Norte y la calle peatonal. El perímetro, la calle y los sentidos de circulación son aproximados.<br>
     • Los subsectores de C1 y D1 no tienen uso detallado en el plano oficial.<br>
     • El GPS en multitudes puede tener error de varios metros; mirá el valor ± en la barra superior.<br>
     • Datos: Geoportal de la Municipalidad de Córdoba. App no oficial.</p>`;
@@ -659,6 +722,11 @@ async function init() {
   try { data = await (await fetch("data.json")).json(); }
   catch (e) { toast("No se pudieron cargar los datos. Abrí la app una vez con internet.", 8000); return; }
   prep(); computeFit(); fitView(false); buildInfo(); setNet();
+  try {
+    const nd = await (await fetch("nav.json")).json();
+    nav = self.Nav.create(nd, feats);
+    navView = { fenceW: nd.fence.map((r) => r.map((p) => G.project(p[0], p[1], 0))), calleW: nd.calle.pts.map((p) => G.project(p[0], p[1], 0)), calleM: nd.calle.w };
+  } catch (e) { toast("No se pudo cargar la red de pasillos: las rutas no estarán disponibles.", 7000); }
   const id = decodeURIComponent((location.hash || "").slice(1));
   const f = id && feats.find((x) => x.id === id);
   if (f) select(f); else invalidate();

@@ -44,7 +44,9 @@
     <div id="hudTitle"></div>
     <div id="hudDist"></div>
     <div id="hudNote"></div>
+    <button id="hudIngreso" class="chip" hidden></button>
   </div>
+  <button id="hudSteps" class="icon" aria-label="Ver los pasos">☰</button>
   <button id="hudClose" class="icon" aria-label="Cancelar ruta">✕</button>
 </section>
 
@@ -64,6 +66,12 @@
   <button class="wide ghost" data-close="layers">Cerrar</button>
 </aside>
 
+<aside id="steps" class="panel" hidden>
+  <h2>Cómo llegar</h2>
+  <ol id="stepList"></ol>
+  <button class="wide ghost" data-close="steps">Cerrar</button>
+</aside>
+
 <aside id="info" class="panel" hidden>
   <h2 id="infoTitle"></h2>
   <div id="infoBody"></div>
@@ -74,6 +82,7 @@
 
 <script src="config.js"></script>
 <script src="geo.js"></script>
+<script src="nav.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

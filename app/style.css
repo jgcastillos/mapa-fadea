@@ -76,3 +76,16 @@ table.cap td:last-child{text-align:right;font-weight:700}
   #sheet,.panel,#hud{left:auto;right:76px;width:400px}
   #sheet{border-radius:18px;bottom:12px}
 }
+
+#hud .icon{font-size:20px}
+.chip{background:#ffffff26;color:#fff;border-radius:999px;padding:5px 11px;font-size:12px;font-weight:700;margin-top:6px}
+#hudNote{white-space:normal}
+#stepList{list-style:none;margin:0;padding:0}
+#stepList li{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+#stepList li.warn{display:block;border-radius:8px;border:0;margin:6px 0}
+#stepList .n{flex:none;width:26px;height:26px;border-radius:50%;background:var(--blue);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:800}
+#stepList .out .n,#stepList .exit .n{background:#64748b}
+#stepList small{display:block;color:var(--muted);font-size:12.5px}
+
+#hudDist{font-size:17px;line-height:1.2}
+#hudTitle{font-size:13px;opacity:.9}
