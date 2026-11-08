@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1e3a8a">
+<meta name="description" content="Mapa del predio FAdeA para la visita del Papa León XIV en Córdoba. Funciona sin conexión.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Mapa Visita Papa · FAdeA</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="map" aria-label="Mapa del predio"></canvas>
+
+<header id="top">
+  <div class="bar">
+    <input id="q" type="search" placeholder="Buscar: C4, salida, sanitario, hospital…" autocomplete="off" enterkeyhint="search" aria-label="Buscar en el mapa">
+    <button id="qclear" class="icon" aria-label="Borrar búsqueda" hidden>✕</button>
+  </div>
+  <div id="chips">
+    <button data-near="ps">✚ Sanitario cercano</button>
+    <button data-near="se">⇥ Salida cercana</button>
+    <button data-near="hosp">H Hospital</button>
+    <button data-near="acc">⇒ Ingreso</button>
+  </div>
+  <ul id="results" hidden></ul>
+  <div id="status"><span id="net" class="pill">En línea</span><span id="gps" class="pill" hidden></span></div>
+</header>
+
+<div id="fabs">
+  <button id="btnLayers" class="fab" aria-label="Capas y descarga offline">☰</button>
+  <button id="btnInfo" class="fab" aria-label="Información y leyenda">i</button>
+  <button id="btnFit" class="fab" aria-label="Ver todo el predio">⤢</button>
+  <button id="btnLocate" class="fab primary" aria-label="Mi ubicación">◎</button>
+</div>
+
+<section id="hud" hidden>
+  <div id="arrow" aria-hidden="true">➤</div>
+  <div class="hudtxt">
+    <div id="hudTitle"></div>
+    <div id="hudDist"></div>
+    <div id="hudNote"></div>
+  </div>
+  <button id="hudClose" class="icon" aria-label="Cancelar ruta">✕</button>
+</section>
+
+<section id="sheet" hidden>
+  <button id="sheetClose" class="icon" aria-label="Cerrar">✕</button>
+  <div id="sheetBody"></div>
+</section>
+
+<aside id="layers" class="panel" hidden>
+  <h2>Capas</h2>
+  <div id="layerList"></div>
+  <h2>Sin conexión</h2>
+  <p class="small" id="offState">Verificando…</p>
+  <button id="btnDl" class="wide">Descargar mapa base (z14–17)</button>
+  <div id="dlbar" hidden><div id="dlfill"></div></div>
+  <p class="small">El plano de cuadrantes y puntos ya funciona sin internet. Descargar el mapa base agrega calles y manzanas de fondo.</p>
+  <button class="wide ghost" data-close="layers">Cerrar</button>
+</aside>
+
+<aside id="info" class="panel" hidden>
+  <h2 id="infoTitle"></h2>
+  <div id="infoBody"></div>
+  <button class="wide ghost" data-close="info">Cerrar</button>
+</aside>
+
+<div id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="config.js"></script>
+<script src="geo.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
