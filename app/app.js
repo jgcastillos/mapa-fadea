@@ -19,6 +19,8 @@ const TYPES = {
   se:         { label: "Salida de emergencia",    color: "#15803d", layer: "se" },
   hosp:       { label: "Hospital",                color: "#7f1d1d", layer: "hosp" },
   acc:        { label: "Ingreso",                 color: "#0369a1", layer: "acc" },
+  pantalla:   { label: "Pantalla",                color: "#0e7490", layer: "ext" },
+  ref:        { label: "Referencia",              color: "#6d28d9", layer: "ext" },
 };
 const LAYERS = [
   { id: "cuad", name: "Cuadrantes y sectores", color: "#facc15" },
@@ -27,7 +29,8 @@ const LAYERS = [
   { id: "se",   name: "Salidas de emergencia", color: "#15803d" },
   { id: "hosp", name: "Hospitales",            color: "#7f1d1d" },
   { id: "acc",  name: "Ingresos",              color: "#0369a1" },
-  { id: "pas",  name: "Pasillos y calle peatonal", color: "#0f766e" },
+  { id: "ext",  name: "Pantallas y referencias", color: "#0e7490" },
+  { id: "door", name: "Puertas de los patios",  color: "#f59e0b" },
   { id: "base", name: "Mapa base (calles)",    color: "#94a3b8" },
 ];
 const POLY_DRAW = ["ingreso", "frente", "cuadrante", "clero", "autoridades", "sector", "escenario"];
@@ -46,11 +49,12 @@ const SEARCH_ALIAS = {
 /* ---------- Estado ---------- */
 let data = null, feats = [];
 let W = 0, H = 0, dpr = 1;
-const view = { cx: 0, cy: 0, z: 15 };
+const view = { cx: 0, cy: 0, z: 15, rot: 0 };
+let measure = false, stageF = null;
 let minZ = 13, maxZ = 20, fitZ = 15, wbox = null, bounds = null;
 let sel = null, route = null, pendingFrom = null, nav = null, navView = null;
 let pos = null, watchId = null, follow = false, heading = null, compassOn = false;
-let layersOn = { cuad: 1, esc: 1, ps: 1, se: 1, hosp: 1, acc: 1, pas: 1, base: 1 };
+let layersOn = { cuad: 1, esc: 1, ps: 1, se: 1, hosp: 1, acc: 1, ext: 1, door: 1, base: 1 };
 try { Object.assign(layersOn, JSON.parse(localStorage.getItem("papa.layers") || "{}")); } catch (e) {}
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -66,11 +70,12 @@ function toast(msg, ms = 3800) {
 }
 
 /* ---------- Datos ---------- */
+let EXTRAS = [], DOORS = {};
 const titleOf = (f) => f.t === "ps" ? "Puesto sanitario " + f.id : f.t === "se" ? "Salida de emergencia " + f.id : f.name;
 const shortOf = (f) => f.t === "ps" ? f.id : f.t === "se" ? f.id : f.t === "sector" ? f.id.split(" · ")[1] || f.id : f.name;
 
 function prep() {
-  feats = data.features;
+  feats = data.features.concat(EXTRAS);
   bounds = data.meta.bounds;
   for (const f of feats) {
     if (f.ring) {
@@ -86,6 +91,7 @@ function prep() {
     f.text = norm([f.id, f.name, TYPES[f.t].label, f.uso || "", f.where || "", SEARCH_ALIAS[f.t] || "",
       ["cuadrante", "clero", "autoridades", "frente"].includes(f.t) ? "cuadrante" : ""].join(" "));
   }
+  stageF = feats.find((f) => f.t === "escenario") || null;
   const pad = 0.012;
   const a = G.project(bounds[0] - pad, bounds[3] + pad, 0), b = G.project(bounds[2] + pad, bounds[1] - pad, 0);
   wbox = [a[0], a[1], b[0], b[1]];
@@ -106,8 +112,9 @@ function computeFit() {
 }
 function fitView(animate) {
   const a = G.project(bounds[0], bounds[3], 0), b = G.project(bounds[2], bounds[1], 0);
-  const t = { cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2 + (150 - 90) / 2 / Math.pow(2, fitZ) * -1, z: fitZ };
-  animate ? animateTo(t) : Object.assign(view, t);
+  const t = { cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2 + (150 - 90) / 2 / Math.pow(2, fitZ) * -1, z: fitZ, rot: view.rot };
+  const sh = vShift(-30, fitZ, view.rot); t.cx = (a[0] + b[0]) / 2 + sh[0]; t.cy = (a[1] + b[1]) / 2 + sh[1];
+  animate ? animateTo(t) : (Object.assign(view, t), updateNorth());
   invalidate();
 }
 function clampView() {
@@ -115,21 +122,34 @@ function clampView() {
   view.cx = clamp(view.cx, wbox[0], wbox[2]);
   view.cy = clamp(view.cy, wbox[1], wbox[3]);
 }
-function zoomAt(sx, sy, dz) {
-  const z1 = clamp(view.z + dz, minZ, maxZ);
-  const S0 = Math.pow(2, view.z), S1 = Math.pow(2, z1);
-  const wx = (sx - W / 2) / S0 + view.cx, wy = (sy - H / 2) / S0 + view.cy;
-  view.cx = wx - (sx - W / 2) / S1; view.cy = wy - (sy - H / 2) / S1; view.z = z1;
+function toWorld(px, py) {
+  const S = Math.pow(2, view.z), c = Math.cos(view.rot), s = Math.sin(view.rot), dx = px - W / 2, dy = py - H / 2;
+  return [view.cx + (dx * c + dy * s) / S, view.cy + (-dx * s + dy * c) / S];
+}
+function scr(wx, wy, S) {
+  const c = Math.cos(view.rot), s = Math.sin(view.rot), dx = (wx - view.cx) * S, dy = (wy - view.cy) * S;
+  return [W / 2 + dx * c - dy * s, H / 2 + dx * s + dy * c];
+}
+function anchor(px, py, w) {   // deja el punto del mundo w justo bajo el píxel (px,py)
+  const S = Math.pow(2, view.z), c = Math.cos(view.rot), s = Math.sin(view.rot), dx = px - W / 2, dy = py - H / 2;
+  view.cx = w[0] - (dx * c + dy * s) / S; view.cy = w[1] - (-dx * s + dy * c) / S;
+}
+function zoomAt(px, py, dz) {
+  const w = toWorld(px, py); view.z = clamp(view.z + dz, minZ, maxZ); anchor(px, py, w);
   clampView(); invalidate();
 }
+const vShift = (px, z, rot) => [(px * Math.sin(rot)) / Math.pow(2, z), (px * Math.cos(rot)) / Math.pow(2, z)];   // corrimiento vertical en pantalla → mundo
+const angNorm = (a) => { a = (a + Math.PI) % (2 * Math.PI); if (a < 0) a += 2 * Math.PI; return a - Math.PI; };
+function updateNorth() { const b = $("#btnNorth"); b.hidden = Math.abs(view.rot) < 0.01; b.firstElementChild.style.transform = `rotate(${(-view.rot * 180) / Math.PI}deg)`; }
 let animId = 0;
 function animateTo(t, ms = 550) {
   cancelAnimationFrame(animId);
-  const s = { cx: view.cx, cy: view.cy, z: view.z }, t0 = performance.now();
+  const s = { cx: view.cx, cy: view.cy, z: view.z, rot: view.rot }, t0 = performance.now();
+  if (t.rot == null) t.rot = view.rot; const dr = angNorm(t.rot - s.rot);
   const step = (now) => {
     const k = Math.min(1, (now - t0) / ms), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
-    view.cx = s.cx + (t.cx - s.cx) * e; view.cy = s.cy + (t.cy - s.cy) * e; view.z = s.z + (t.z - s.z) * e;
-    clampView(); invalidate();
+    view.cx = s.cx + (t.cx - s.cx) * e; view.cy = s.cy + (t.cy - s.cy) * e; view.z = s.z + (t.z - s.z) * e; view.rot = s.rot + dr * e;
+    clampView(); updateNorth(); invalidate();
     if (k < 1) animId = requestAnimationFrame(step);
   };
   animId = requestAnimationFrame(step);
@@ -141,8 +161,8 @@ function flyTo(f) {
     z = clamp(Math.log2(Math.min((W * 0.75) / dx, (H * 0.3) / dy)), 15.5, 19);
     cx = (f.bb[0] + f.bb[2]) / 2; cy = (f.bb[1] + f.bb[3]) / 2;
   } else { z = Math.max(view.z, 17.2); cx = f.cw[0]; cy = f.cw[1]; }
-  cy += (H * 0.17) / Math.pow(2, z);
-  animateTo({ cx, cy, z });
+  const sh = vShift(H * 0.17, z, view.rot); cx += sh[0]; cy += sh[1];
+  animateTo({ cx, cy, z, rot: view.rot });
 }
 
 /* ---------- Tiles (mapa base opcional, con caché offline) ---------- */
@@ -151,6 +171,7 @@ let inflight = 0;
 const tileUrl = (z, x, y) => C.TILE_URL.replace("{z}", z).replace("{x}", x).replace("{y}", y);
 async function fetchTile(z, x, y) {
   const url = tileUrl(z, x, y);
+  if (!/^https?:/.test(C.TILE_URL)) { try { const r = await fetch(url); if (r.ok) return createImageBitmap(await r.blob()); } catch (e) {} return null; }   // mosaicos propios: los sirve/guarda el service worker
   let resp = null;
   try {
     if (typeof caches !== "undefined") {
@@ -185,8 +206,9 @@ function getTile(z, x, y) {
 function drawTiles(S) {
   const tz = clamp(Math.round(view.z), C.TILE_MINZ, C.TILE_MAXZ);
   const n = Math.pow(2, tz), ts = 256 * Math.pow(2, view.z - tz);
-  const x0 = Math.floor(((view.cx - W / 2 / S) * n) / 256), x1 = Math.floor(((view.cx + W / 2 / S) * n) / 256);
-  const y0 = Math.floor(((view.cy - H / 2 / S) * n) / 256), y1 = Math.floor(((view.cy + H / 2 / S) * n) / 256);
+  const cs = [toWorld(0, 0), toWorld(W, 0), toWorld(0, H), toWorld(W, H)], wxs = cs.map((q) => q[0]), wys = cs.map((q) => q[1]);
+  const x0 = Math.floor((Math.min(...wxs) * n) / 256), x1 = Math.floor((Math.max(...wxs) * n) / 256);
+  const y0 = Math.floor((Math.min(...wys) * n) / 256), y1 = Math.floor((Math.max(...wys) * n) / 256);
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
     if (x < 0 || y < 0 || x >= n || y >= n) continue;
     const sx = ((x * 256) / n - view.cx) * S + W / 2, sy = ((y * 256) / n - view.cy) * S + H / 2;
@@ -202,7 +224,7 @@ function drawTiles(S) {
 /* ---------- Dibujo ---------- */
 let raf = 0;
 function invalidate() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); }
-const sx = (wx, S) => (wx - view.cx) * S + W / 2;
+const sx = (wx, S) => (wx - view.cx) * S + W / 2;   // coordenadas «sin rotar»; el lienzo aplica la rotación
 const sy = (wy, S) => (wy - view.cy) * S + H / 2;
 
 function polyStyle(f) {
@@ -234,9 +256,9 @@ function pointVisible(f) {
   return true;
 }
 function drawPoint(f, S) {
-  const x = sx(f.cw[0], S), y = sy(f.cw[1], S);
+  const [x, y] = scr(f.cw[0], f.cw[1], S);
   if (x < -30 || y < -30 || x > W + 30 || y > H + 30) return;
-  const big = f.t === "hosp" || f.t === "acc";
+  const big = f.t === "hosp" || f.t === "acc" || f.t === "ref" || f.t === "pantalla";
   const r = big ? 14 : clamp(6 + (view.z - 15.6) * 2.2, 8, 13);
   ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.fillStyle = TYPES[f.t].color;
   if (f.t === "hosp") {
@@ -250,8 +272,8 @@ function drawPoint(f, S) {
       const a = r * 0.5; ctx.lineWidth = Math.max(2.2, r * 0.28);
       ctx.beginPath(); ctx.moveTo(x - a, y); ctx.lineTo(x + a, y); ctx.moveTo(x, y - a); ctx.lineTo(x, y + a); ctx.stroke();
     } else {
-      ctx.font = `800 ${Math.round(r * (f.t === "acc" ? 0.78 : 0.95))}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText(f.t === "se" ? "SE" : "IN", x, y + 0.5);
+      ctx.font = `800 ${Math.round(r * (f.t === "acc" || f.t === "ref" || f.t === "pantalla" ? 0.78 : 0.95))}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(f.t === "se" ? "SE" : f.t === "pantalla" ? "TV" : f.t === "ref" ? "i" : "IN", x, y + 0.5);
     }
   }
   if (big && view.z >= 14.2) {
@@ -266,11 +288,11 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
   const S = Math.pow(2, view.z);
+  ctx.save(); ctx.translate(W / 2, H / 2); ctx.rotate(view.rot); ctx.translate(-W / 2, -H / 2);
   if (layersOn.base) {
     drawTiles(S);
-    ctx.fillStyle = "rgba(255,255,255,.18)"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(255,255,255,.18)"; ctx.fillRect(-W, -H, 3 * W, 3 * H);
   }
-  drawPasillos(S);
   // polígonos
   for (const t of POLY_DRAW) {
     if (!layersOn[TYPES[t].layer]) continue;
@@ -286,11 +308,13 @@ function draw() {
     polyPath(sel, S); ctx.lineWidth = 6; ctx.strokeStyle = "#fff"; ctx.stroke();
     ctx.lineWidth = 3; ctx.strokeStyle = "#2563eb"; ctx.stroke();
   }
+  drawRoute(S);
+  ctx.restore();
   // rótulos de polígonos
   const ls = clamp(10 + (view.z - 15) * 3, 10, 24);
   for (const f of feats) {
     if (!f.ring || !layersOn[TYPES[f.t].layer]) continue;
-    const x = sx(f.cw[0], S), y = sy(f.cw[1], S);
+    const [x, y] = scr(f.cw[0], f.cw[1], S);
     if (x < -50 || y < -50 || x > W + 50 || y > H + 50) continue;
     if (f.t === "cuadrante" || f.t === "frente") { if (view.z >= 15) halo(f.id, x, y, ls, "#422006"); }
     else if (f.t === "clero" || f.t === "autoridades") {
@@ -300,42 +324,40 @@ function draw() {
     else if (f.t === "sector") { if (view.z >= 17.2) halo(shortOf(f), x, y, 11, "#111", 600); }
     else if (f.t === "escenario") { if (view.z >= 16.2) halo("Escenario Papal", x, y - 14, 12, "#7f1d1d"); }
   }
-  // ruta
-  drawRoute(S);
+  drawDoors(S);
+  drawMeasure(S);
   // puntos
-  for (const t of ["se", "ps", "acc", "hosp"]) for (const f of feats) if (f.t === t && pointVisible(f)) drawPoint(f, S);
+  for (const t of ["se", "ps", "acc", "hosp", "ref", "pantalla"]) for (const f of feats) if (f.t === t && pointVisible(f)) drawPoint(f, S);
   if (sel && !sel.ring) {
-    const x = sx(sel.cw[0], S), y = sy(sel.cw[1], S);
+    const [x, y] = scr(sel.cw[0], sel.cw[1], S);
     ctx.beginPath(); ctx.arc(x, y, 20, 0, 6.2832); ctx.lineWidth = 6; ctx.strokeStyle = "#fff"; ctx.stroke();
     ctx.lineWidth = 3; ctx.strokeStyle = "#2563eb"; ctx.stroke();
   }
   drawUser(S);
   if (layersOn.base) { halo(C.TILE_ATTRIBUTION, 62, H - 8, 10, "#475569", 500); }
 }
-function drawPasillos(S) {
-  if (!navView || !layersOn.pas) return;
-  ctx.beginPath();
-  for (const ring of navView.fenceW) { ring.forEach((p, i) => { const x = sx(p[0], S), y = sy(p[1], S); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath(); }
-  ctx.fillStyle = "rgba(255,255,255,.62)"; ctx.fill("evenodd");
-  ctx.setLineDash([10, 7]); ctx.lineWidth = 2; ctx.strokeStyle = "#0f766e"; ctx.stroke(); ctx.setLineDash([]);
-  const ppm = (256 * S) / (40075016.686 * Math.cos((bounds[1] + bounds[3]) / 2 * Math.PI / 180));
-  ctx.lineCap = "round"; ctx.lineJoin = "round";
-  ctx.beginPath(); navView.calleW.forEach((p, i) => { const x = sx(p[0], S), y = sy(p[1], S); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-  ctx.lineWidth = navView.calleM * ppm; ctx.strokeStyle = "rgba(34,197,94,.30)"; ctx.stroke();
-  ctx.lineWidth = 1.5; ctx.setLineDash([6, 6]); ctx.strokeStyle = "#15803d"; ctx.stroke(); ctx.setLineDash([]);
-  if (view.z >= 14.8) { const m = navView.calleW[2]; halo("CALLE PEATONAL (aprox.)", sx(m[0], S), sy(m[1], S) - Math.max(14, navView.calleM * ppm / 2 + 8), 11, "#14532d"); }
+function drawDoors(S) {
+  if (!layersOn.door) return;
+  for (const f of feats) { const d = DOORS[f.id]; if (!d) continue;
+    const q = G.project(d[0], d[1], 0), [x, y] = scr(q[0], q[1], S); if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, 6.2832); ctx.fillStyle = "#f59e0b"; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = "#fff"; ctx.stroke(); }
+}
+function drawMeasure(S) {   // línea recta entre vos y el escenario (solo distancia lineal)
+  if (!measure || !stageF || !pos) return;
+  const p = G.project(pos.ll[0], pos.ll[1], 0), a = scr(p[0], p[1], S), b = scr(stageF.cw[0], stageF.cw[1], S);
+  ctx.setLineDash([8, 7]); ctx.lineWidth = 3; ctx.strokeStyle = "#b91c1c"; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]);
 }
 function drawRoute(S) {
   const r = route && route.res; if (!r || !r.ok) return;
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   for (const seg of r.segs) {
     ctx.beginPath(); seg.pts.forEach((p, i) => { const q = G.project(p[0], p[1], 0), x = sx(q[0], S), y = sy(q[1], S); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    if (seg.kind === "net") { ctx.setLineDash([]); ctx.lineWidth = 9; ctx.strokeStyle = "#fff"; ctx.stroke(); ctx.lineWidth = 5; ctx.strokeStyle = "#2563eb"; ctx.stroke(); }
-    else { ctx.setLineDash([4, 10]); ctx.lineWidth = 6; ctx.strokeStyle = "#fff"; ctx.stroke(); ctx.lineWidth = 3.5; ctx.strokeStyle = seg.kind === "exit" ? "#ea580c" : "#475569"; ctx.stroke(); ctx.setLineDash([]); }
+    if (seg.kind === "net" || seg.kind === "street") { ctx.setLineDash([]); ctx.lineWidth = 9; ctx.strokeStyle = "#fff"; ctx.stroke(); ctx.lineWidth = 5; ctx.strokeStyle = "#2563eb"; ctx.stroke(); }
+    else { ctx.setLineDash([3, 9]); ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(37,99,235,.35)"; ctx.stroke(); ctx.setLineDash([]); }   // empalmes / tramos orientativos: casi transparentes
   }
   // flechitas de sentido sobre los tramos de red
   for (const seg of r.segs) {
-    if (seg.kind !== "net") continue;
+    if (seg.kind !== "net" && seg.kind !== "street") continue;
     for (let i = 0; i + 1 < seg.pts.length; i++) {
       const a = G.project(seg.pts[i][0], seg.pts[i][1], 0), b = G.project(seg.pts[i + 1][0], seg.pts[i + 1][1], 0);
       const ax = sx(a[0], S), ay = sy(a[1], S), bx = sx(b[0], S), by = sy(b[1], S), len = Math.hypot(bx - ax, by - ay);
@@ -353,12 +375,12 @@ function drawRoute(S) {
 }
 function drawUser(S) {
   if (!pos) return;
-  const p = G.project(pos.ll[0], pos.ll[1], 0), x = sx(p[0], S), y = sy(p[1], S);
+  const p = G.project(pos.ll[0], pos.ll[1], 0), [x, y] = scr(p[0], p[1], S);
   const mpp = (40075016.686 * Math.cos((pos.ll[1] * Math.PI) / 180)) / (256 * S), rr = pos.acc / mpp;
   if (rr > 8) { ctx.beginPath(); ctx.arc(x, y, rr, 0, 6.2832); ctx.fillStyle = "rgba(37,99,235,.13)"; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = "rgba(37,99,235,.4)"; ctx.stroke(); }
   const dir = currentHeading();
   if (dir != null) {
-    ctx.save(); ctx.translate(x, y); ctx.rotate((dir * Math.PI) / 180);
+    ctx.save(); ctx.translate(x, y); ctx.rotate((dir * Math.PI) / 180 + view.rot);
     const g = ctx.createLinearGradient(0, 0, 0, -44); g.addColorStop(0, "rgba(37,99,235,.55)"); g.addColorStop(1, "rgba(37,99,235,0)");
     ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-17, -44); ctx.lineTo(17, -44); ctx.closePath(); ctx.fill(); ctx.restore();
   }
@@ -370,7 +392,7 @@ const ptrs = new Map(); let pinch = null;
 cv.addEventListener("pointerdown", (e) => {
   cv.setPointerCapture(e.pointerId); cancelAnimationFrame(animId);
   ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t: performance.now(), moved: false });
-  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 }; ptrs.forEach((p) => (p.moved = true)); }
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, ang: Math.atan2(b.y - a.y, b.x - a.x) }; ptrs.forEach((p) => (p.moved = true)); }
 });
 cv.addEventListener("pointermove", (e) => {
   const p = ptrs.get(e.pointerId); if (!p) return;
@@ -378,18 +400,22 @@ cv.addEventListener("pointermove", (e) => {
   if (ptrs.size === 1) {
     if (!p.moved && Math.hypot(p.x - p.x0, p.y - p.y0) < 7) return;
     if (!p.moved) { p.moved = true; setFollow(false); }
-    const S = Math.pow(2, view.z); view.cx -= dx / S; view.cy -= dy / S; clampView(); invalidate();
+    const S = Math.pow(2, view.z), c = Math.cos(view.rot), sn = Math.sin(view.rot);
+    view.cx -= (dx * c + dy * sn) / S; view.cy -= (-dx * sn + dy * c) / S; clampView(); invalidate();
   } else if (ptrs.size === 2 && pinch) {
-    const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y), cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
-    const S = Math.pow(2, view.z); view.cx -= (cx - pinch.cx) / S; view.cy -= (cy - pinch.cy) / S;
-    zoomAt(cx, cy, Math.log2(d / pinch.d)); pinch = { d, cx, cy }; setFollow(false);
+    const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y), cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2, ang = Math.atan2(b.y - a.y, b.x - a.x);
+    const w = toWorld(pinch.cx, pinch.cy);                       // punto del mapa bajo los dedos (antes)
+    view.z = clamp(view.z + Math.log2(d / pinch.d), minZ, maxZ);
+    view.rot = angNorm(view.rot + angNorm(ang - pinch.ang));     // girar con dos dedos, como Google Maps
+    anchor(cx, cy, w); clampView(); updateNorth(); invalidate();
+    pinch = { d, cx, cy, ang }; setFollow(false);
   }
 });
 function endPtr(e) {
   const p = ptrs.get(e.pointerId); if (!p) return;
   ptrs.delete(e.pointerId);
   if (e.type === "pointerup" && !p.moved && performance.now() - p.t < 600) tap(p.x, p.y);
-  if (ptrs.size < 2) pinch = null;
+  if (ptrs.size < 2 && pinch) { pinch = null; if (Math.abs(view.rot) < 0.07 && view.rot !== 0) animateTo({ cx: view.cx, cy: view.cy, z: view.z, rot: 0 }, 200); }   // imán al norte
 }
 cv.addEventListener("pointerup", endPtr); cv.addEventListener("pointercancel", endPtr);
 cv.addEventListener("wheel", (e) => { e.preventDefault(); zoomAt(e.clientX, e.clientY, -e.deltaY * 0.0016); }, { passive: false });
@@ -400,11 +426,11 @@ function hit(px, py) {
   let best = null, bd = 20 * 20;
   for (const f of feats) {
     if (f.ring || !pointVisible(f)) continue;
-    const dx = sx(f.cw[0], S) - px, dy = sy(f.cw[1], S) - py, d2 = dx * dx + dy * dy;
+    const q = scr(f.cw[0], f.cw[1], S), dx = q[0] - px, dy = q[1] - py, d2 = dx * dx + dy * dy;
     if (d2 < bd) { bd = d2; best = f; }
   }
   if (best) return best;
-  const w = [(px - W / 2) / S + view.cx, (py - H / 2) / S + view.cy];
+  const w = toWorld(px, py);
   for (const t of POLY_HIT) {
     if (!layersOn[TYPES[t].layer]) continue;
     for (const f of feats) if (f.t === t && w[0] >= f.bb[0] && w[0] <= f.bb[2] && w[1] >= f.bb[1] && w[1] <= f.bb[3] && G.inRing(w, f.w)) return f;
@@ -438,8 +464,10 @@ function renderSheet() {
   if (f.cap) h += `<div class="kv">Capacidad estimada: <b>≈ ${fmtN(f.cap)} personas</b> · ${fmtN(f.area)} m²</div>`;
   else if (f.capref) h += `<div class="kv">Capacidad: <b>≈ ${fmtN(f.capref)} personas</b> (promedio del plano) · ${fmtN(f.area)} m²</div>`;
   else if (f.area && f.t === "sector") h += `<div class="kv">Superficie: <b>${fmtN(f.area)} m²</b></div>`;
-  if (pos) { const d = G.distance(pos.ll, f.ll); h += `<div class="kv">A <b>${G.fmtDist(d)}</b> de vos · ${G.fmtTime(d, C.WALK_SPEED)} a pie</div>`; }
-  if (f.t === "clero" || f.t === "autoridades") h += `<div class="warn">Zona de acceso restringido.</div>`;
+  if (pos) { const d = G.distance(pos.ll, f.ll); h += `<div class="kv">A <b>${G.fmtDist(d)}</b> de vos en línea recta</div>`; }
+  if (stageF && f !== stageF && f.t !== "escenario") h += `<div class="kv">Al escenario: <b>${G.fmtDist(G.distance(f.ll, stageF.ll))}</b> en línea recta</div>`;
+  if (f.t === "clero" || f.t === "autoridades") h += `<div class="kv small">Es el cuadrante completo, con todos sus subsectores.</div><div class="warn">Zona de acceso restringido.</div>`;
+  if (f.t === "sector") h += `<div class="kv small">Parte del cuadrante ${esc((f.id.split(" · ")[0]) || "")}.</div>`;
   if (f.nota) h += `<div class="warn">${esc(f.nota)} Revisá con el equipo de datos.</div>`;
   const kinds = { ps: ["se", "hosp"], se: ["ps", "hosp"], hosp: ["ps", "se"], acc: ["ps", "hosp"] }[f.t] || ["ps", "se"];
   const rows = kinds.map((k) => nearest(k, f.ll, f)).filter(Boolean);
@@ -447,6 +475,7 @@ function renderSheet() {
     h += `<div class="near"><div class="kv">${f.ring ? "Más cercanos (desde el centro)" : "Más cercanos"}</div>` +
       rows.map((r, i) => `<button data-sel="${esc(r.f.id)}"><span>${esc(titleOf(r.f))}</span><span>${G.fmtDist(r.d)}</span></button>`).join("") + `</div>`;
   }
+  h += `<div class="actions"><button id="aGmaps" class="ghost">🗺 Google Maps a pie hasta el ingreso</button></div>`;
   h += `<div class="actions"><button id="aGo">Ir hasta acá</button><button id="aFrom" class="ghost">Salir desde acá</button><button id="aShare" class="ghost">Compartir</button></div>`;
   $("#sheetBody").innerHTML = h; sheet.hidden = false; sheet.scrollTop = 0; layout();
 }
@@ -454,10 +483,24 @@ $("#sheetBody").addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (!b) return;
   if (b.dataset.sel) { const f = feats.find((x) => x.id === b.dataset.sel); if (f) select(f); }
   else if (b.id === "aGo") goTo(sel);
+  else if (b.id === "aGmaps") openGmaps(sel);
   else if (b.id === "aFrom") { pendingFrom = sel; toast("Punto de partida: " + titleOf(sel) + ". Ahora elegí el destino y tocá «Ir hasta acá»."); }
   else if (b.id === "aShare") share(sel);
 });
 $("#sheetClose").onclick = () => { sel = null; renderSheet(); invalidate(); };
+function gateFor(f) {
+  const acc = feats.filter((x) => x.t === "acc"), N = acc.find((x) => x.id === "ACC-N"), S = acc.find((x) => x.id === "ACC-S");
+  if (f.t === "acc") return f;
+  if (f.t === "ingreso") return acc.find((x) => (f.id || f.name || "").toLowerCase().includes(x.id === "ACC-N" ? "norte" : "sur")) || N;
+  if (f.predio === "Frente") return N;
+  const ref = pos ? pos.ll : f.ll; return G.distance(ref, N.ll) <= G.distance(ref, S.ll) ? N : S;
+}
+function openGmaps(f) {   // necesita internet; Google arma el camino a pie hasta el ingreso
+  const g = gateFor(f); if (!g) return;
+  const u = "https://www.google.com/maps/dir/?api=1&travelmode=walking&destination=" + g.ll[1] + "," + g.ll[0];
+  toast("Se abre Google Maps (necesita internet) hasta: " + g.name + ". Adentro seguí con este mapa.", 5000);
+  window.open(u, "_blank", "noopener");
+}
 function share(f) {
   const url = location.href.split("#")[0] + "#" + encodeURIComponent(f.id), text = titleOf(f) + " · Visita del Papa, FAdeA";
   if (navigator.share) navigator.share({ title: text, url }).catch(() => {});
@@ -468,7 +511,7 @@ function share(f) {
 /* ---------- Rutas por pasillos ---------- */
 let ingresoMode = "auto";
 try { ingresoMode = localStorage.getItem("papa.ingreso") || "auto"; } catch (e) {}
-const INGRESO_LABEL = { auto: "Ingreso: automático", N: "Ingreso: Norte (invitación)", S: "Ingreso: Sur" };
+const INGRESO_LABEL = { auto: "Ingreso: el más conveniente", N: "Ingreso: Norte", S: "Ingreso: Sur" };
 let lastCalc = null, calcT = 0;
 
 function originLL() { return route ? (route.from ? route.from.ll : pos ? pos.ll : null) : null; }
@@ -485,6 +528,7 @@ function goTo(f) {
   if (!nav) { toast("Todavía se está cargando la red de pasillos…"); return; }
   if (pendingFrom && pendingFrom !== f) { route = { to: f, from: pendingFrom, arrived: false }; pendingFrom = null; }
   else { route = { to: f, from: null, arrived: false }; if (!pos) { startGPS(); toast("Esperando señal GPS… (o usá «Salir desde acá» en tu punto de partida)", 5000); } }
+  sel = f; $("#sheet").hidden = true; layout(); try { history.replaceState(null, "", "#" + encodeURIComponent(f.id)); } catch (e) {}
   recalc(true); updateHud(); invalidate();
   if (route.res && route.res.ok) fitRoute();
 }
@@ -493,19 +537,21 @@ function fitRoute() {
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
   const o = originLL();
   const pts = [];
-  r.segs.forEach((s) => s.kind !== "out" && s.pts.forEach((p) => pts.push(p)));   // el tramo exterior puede ser larguísimo
+  r.segs.forEach((s) => s.pts.forEach((p) => pts.push(p)));
+  if (r.dist > 1500) { let acc = 0, k = pts.length - 1; while (k > 0 && acc < 1200) { acc += G.distance(pts[k], pts[k - 1]); k--; } pts.splice(0, k); }   // recorrido largo: encuadrar el final
   if (!pts.length) return;
   for (const p of pts) { const q = G.project(p[0], p[1], 0); x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }
   const dx = Math.max(x1 - x0, 1e-7), dy = Math.max(y1 - y0, 1e-7);
   const z = clamp(Math.log2(Math.min((W * 0.8) / dx, (H * 0.42) / dy)), minZ, 18.5);
-  animateTo({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 + (H * 0.1) / Math.pow(2, z), z });
+  animateTo({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 + (H * 0.1) / Math.pow(2, z), z, rot: 0 });
 }
 function currentHeading() { return heading != null ? heading : pos && pos.gh != null ? pos.gh : null; }
 function updateHud() {
   const hud = $("#hud");
+  keepAwake(!!route);
   if (!route) { hud.hidden = true; $("#steps").hidden = true; layout(); return; }
   hud.hidden = false;
-  $("#hudTitle").textContent = "Hacia " + titleOf(route.to);
+  $("#hudTitle").textContent = "🚶 A pie · Hacia " + titleOf(route.to) + " · referencial";
   const ing = $("#hudIngreso"), o = originLL();
   if (!o) {
     $("#hudDist").textContent = "Buscando GPS…"; $("#hudNote").textContent = "Activá la ubicación del dispositivo";
@@ -529,7 +575,7 @@ function updateHud() {
 }
 function renderSteps() {
   const r = route && route.res; if (!r || !r.ok) return;
-  const T = (f) => (f.t === "clero" || f.t === "autoridades") ? "<li class='warn'>Zona de acceso restringido (" + esc(TYPES[f.t].label) + ").</li>" : "";
+  const T = (f) => (f.t === "clero" || f.t === "autoridades") ? "<li class='warn'>Zona de acceso restringido (" + esc(TYPES[f.t].label) + "). Los ingresos protocolares siguen las indicaciones de tu pase.</li>" : "";
   $("#stepList").innerHTML = T(route.to) + r.notes.map((n) => `<li class="warn">${esc(n)}</li>`).join("") +
     r.steps.map((s, i) => `<li class="st ${s.kind}"><span class="n">${s.final ? "★" : i + 1}</span><span>${esc(s.action)}${s.dist ? `<small>${G.fmtDist(s.dist)} ${esc(s.place || "")}</small>` : ""}</span></li>`).join("");
 }
@@ -538,7 +584,7 @@ $("#hudSteps").onclick = () => { const h = !$("#steps").hidden; closePanels(); i
 $("#hudIngreso").onclick = () => {
   ingresoMode = ingresoMode === "auto" ? "N" : ingresoMode === "N" ? "S" : "auto";
   try { localStorage.setItem("papa.ingreso", ingresoMode); } catch (e) {}
-  recalc(true); updateHud(); invalidate(); fitRoute(); toast(INGRESO_LABEL[ingresoMode] + (ingresoMode === "N" ? " · los invitados siempre entran por el Norte" : ""));
+  recalc(true); updateHud(); invalidate(); fitRoute(); toast(INGRESO_LABEL[ingresoMode] + " · Si tenés pase protocolar, seguí el ingreso que te indicaron con el pase.", 5000);
 };
 
 /* ---------- GPS y brújula ---------- */
@@ -547,8 +593,8 @@ function startGPS() {
   if (!navigator.geolocation) { toast("Este dispositivo no tiene GPS"); return; }
   if (watchId !== null) return;
   requestCompass();
-  watchId = navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 });
-  $("#btnLocate").classList.add("on");
+  watchId = navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy: true, maximumAge: opt.saver ? 15000 : 2000, timeout: 30000 });
+  $("#btnLocate").classList.add("on"); $("#gpsAsk").hidden = true;
 }
 function onPos(p) {
   const first = !pos, c = p.coords;
@@ -565,12 +611,13 @@ function onPos(p) {
   }
   if (follow && !first) { const q = G.project(pos.ll[0], pos.ll[1], 0); view.cx = q[0]; view.cy = q[1]; clampView(); }
   if (route && first && !route.from) fitRoute();
-  updateHud(); if (sel) renderSheet(); invalidate();
+  updateHud(); updateMeasure(); if (sel) renderSheet(); invalidate();
 }
 function onPosErr(e) {
-  if (e.code === 1) { toast("Permiso de ubicación denegado. Habilitalo en los ajustes del navegador.", 6000); if (watchId !== null) navigator.geolocation.clearWatch(watchId); watchId = null; $("#btnLocate").classList.remove("on"); }
-  else if (e.code === 2) toast("No se pudo obtener señal GPS. Probá al aire libre.");
+  if (e.code === 1) { toast("Permiso de ubicación denegado. Habilitalo en los ajustes del navegador.", 6000); if (watchId !== null) navigator.geolocation.clearWatch(watchId); watchId = null; $("#btnLocate").classList.remove("on"); $("#gpsAsk").hidden = false; }
+  else if (e.code === 2) toast("No se pudo obtener señal GPS. Revisá que la ubicación esté activada (¿modo avión?) y probá al aire libre.", 6000);
 }
+$("#gpsAsk").onclick = () => { startGPS(); toast("Buscando tu ubicación… Permití el acceso cuando te lo pida.", 5000); };
 $("#btnLocate").onclick = () => {
   if (watchId === null) { startGPS(); toast("Buscando tu ubicación…"); return; }
   if (!pos) { toast("Esperando señal GPS…"); return; }
@@ -592,7 +639,7 @@ function listenCompass() {
     if (a == null) return;
     a = (a + ((screen.orientation && screen.orientation.angle) || 0)) % 360;
     if (heading == null) heading = a; else { const d = ((a - heading + 540) % 360) - 180; heading = (heading + d * 0.25 + 360) % 360; }
-    const now = performance.now(); if (now - lastCompass < 120) return; lastCompass = now;
+    const now = performance.now(); if (now - lastCompass < (opt.saver ? 700 : 120)) return; lastCompass = now;
     updateHud(); invalidate();
   };
   addEventListener("deviceorientationabsolute", h, true); addEventListener("deviceorientation", h, true);
@@ -623,18 +670,91 @@ qEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { const li = res
 $("#qclear").onclick = () => { qEl.value = ""; search(); qEl.focus(); };
 resEl.addEventListener("click", (e) => { const li = e.target.closest("li[data-id]"); if (li) pickResult(li.dataset.id); });
 function pickResult(id) { const f = feats.find((x) => x.id === id); if (!f) return; qEl.blur(); hideResults(); select(f); }
-document.querySelectorAll("#chips button").forEach((b) => b.addEventListener("click", () => {
+function updateMeasure() {
+  const el = $("#measure"); $("#chipPapa").classList.toggle("on", measure);
+  if (!measure || !stageF) { el.hidden = true; return; }
+  el.hidden = false;
+  if (!pos) { el.innerHTML = "📏 <b>¿A cuánto estás del Papa?</b><small>Activá el GPS (◎) para medir la distancia en línea recta al escenario.</small>"; return; }
+  const d = G.distance(pos.ll, stageF.ll);
+  el.innerHTML = `📏 Estás a <b>${G.fmtDist(d)}</b> del escenario<small>Distancia en línea recta, no es un recorrido a pie.</small>`;
+}
+$("#chipPapa").addEventListener("click", () => {
+  measure = !measure; if (measure && !pos) startGPS();
+  if (measure && stageF) { const z = Math.min(view.z, 16.2); if (pos) { const a = pos.ll, b = stageF.ll; const q = G.project((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 0); animateTo({ cx: q[0], cy: q[1], z, rot: view.rot }); } }
+  updateMeasure(); invalidate();
+});
+document.querySelectorAll("#chips button[data-near]").forEach((b) => b.addEventListener("click", () => {
   const ref = pos ? pos.ll : G.unproject(view.cx, view.cy, 0), n = nearest(b.dataset.near, ref);
   if (!n) return;
   closePanels(); hideResults(); select(n.f);
   if (pos) { goTo(n.f); } else toast("Mostrando el más cercano al centro del mapa. Activá el GPS (◎) para que te guíe.", 5000);
 }));
 
+/* ---------- Modo noche y ahorro de batería ---------- */
+const opt = { dark: null, saver: false };
+try { const d = localStorage.getItem("papa.dark"); opt.dark = d === null ? (matchMedia("(prefers-color-scheme: dark)").matches ? 1 : 0) : +d; opt.saver = localStorage.getItem("papa.saver") === "1"; } catch (e) { opt.dark = 0; }
+function applyOpts() {
+  document.body.classList.toggle("dark", !!opt.dark);
+  const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = opt.dark ? "#0b1220" : "#1e3a8a";
+  $("#optDark").checked = !!opt.dark; $("#optSaver").checked = opt.saver;
+  if (opt.saver) keepAwake(false); else if (route) keepAwake(true);
+  if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; startGPS(); }
+  invalidate();
+}
+$("#optDark").addEventListener("change", (e) => { opt.dark = e.target.checked ? 1 : 0; try { localStorage.setItem("papa.dark", opt.dark); } catch (x) {} applyOpts(); });
+$("#optSaver").addEventListener("change", (e) => { opt.saver = e.target.checked; try { localStorage.setItem("papa.saver", opt.saver ? 1 : 0); } catch (x) {} applyOpts(); toast(opt.saver ? "Ahorro de batería activado" : "Ahorro de batería desactivado"); });
+
+/* ---------- ¿Dónde estoy? ---------- */
+let whereText = "";
+function whereMsg() {
+  const ll = pos.ll; let zone = null;
+  for (const t of ["clero", "autoridades", "cuadrante", "frente"]) { for (const f of feats) if (f.t === t && G.inRing(ll, f.ring)) { zone = f; break; } if (zone) break; }
+  let place = zone ? "en el cuadrante " + zone.id : null;
+  if (!place && nav) { const pi = nav.pointInfo(ll); place = pi.kind === "pasillo" ? pi.place : pi.kind === "zona" ? "dentro de " + (pi.zone || "") : "fuera del predio"; }
+  const ps = nearest("ps", ll), se = nearest("se", ll), st = stageF ? G.distance(ll, stageF.ll) : null;
+  const L = [`Estoy ${place || "en el predio"} (GPS ±${Math.round(pos.acc)} m).`];
+  if (ps) L.push(`Puesto sanitario más cercano: ${ps.f.id} a ${G.fmtDist(ps.d)}.`);
+  if (se) L.push(`Salida de emergencia más cercana: ${se.f.id} a ${G.fmtDist(se.d)}.`);
+  if (st != null) L.push(`Al escenario: ${G.fmtDist(st)} en línea recta.`);
+  L.push(`Coordenadas: ${ll[1].toFixed(5)}, ${ll[0].toFixed(5)}`, `https://maps.google.com/?q=${ll[1].toFixed(6)},${ll[0].toFixed(6)}`);
+  return { text: L.join("\n"), place: place || "en el predio" };
+}
+function openWhere() {
+  closePanels(); hideResults();
+  if (watchId === null) startGPS();
+  if (!pos) { toast("Esperando señal GPS… probá al aire libre y con la ubicación activada.", 5000); return; }
+  const m = whereMsg(); whereText = m.text;
+  $("#whereBody").innerHTML = `<div class="big">${esc(m.place)}</div><pre>${esc(m.text)}</pre><div class="small">Si no hay señal de datos, podés dictarlo por radio o mandarlo por mensaje de texto.</div>`;
+  $("#where").hidden = false;
+}
+$("#chipWhere").addEventListener("click", openWhere);
+$("#whereCopy").onclick = () => { if (navigator.clipboard) navigator.clipboard.writeText(whereText).then(() => toast("Mensaje copiado")); else toast(whereText, 9000); };
+$("#whereShare").onclick = () => { if (navigator.share) navigator.share({ text: whereText }).catch(() => {}); else $("#whereCopy").click(); };
+
+/* ---------- Avisos de último momento (avisos.json, con red primero) ---------- */
+let avisosSeen = {}; try { avisosSeen = JSON.parse(localStorage.getItem("papa.avisos") || "{}"); } catch (e) {}
+async function loadAvisos() {
+  let j = null;
+  try { const r = await fetch("avisos.json?t=" + Date.now(), { cache: "no-store" }); if (r.ok) { j = await r.json(); try { localStorage.setItem("papa.avisos.last", JSON.stringify(j)); } catch (e) {} } } catch (e) {}
+  if (!j) { try { j = JSON.parse(localStorage.getItem("papa.avisos.last") || "null"); } catch (e) {} }
+  renderAvisos(j);
+}
+function renderAvisos(j) {
+  const box = $("#avisos"), now = Date.now();
+  const items = ((j && j.items) || []).filter((a) => a && a.texto && (!a.hasta || Date.parse(a.hasta) > now) && !avisosSeen[a.id + "|" + (a.v || j.actualizado || "")]);
+  box.innerHTML = items.map((a) => `<div class="av ${a.nivel === "alerta" ? "alerta" : ""}" data-k="${esc(a.id + "|" + (a.v || j.actualizado || ""))}"><b>${a.nivel === "alerta" ? "⚠ " : "ℹ "}</b>${esc(a.texto)}${j.actualizado ? `<small>Actualizado: ${esc(j.actualizado)}</small>` : ""}<button aria-label="Cerrar aviso">✕</button></div>`).join("");
+  document.body.classList.toggle("has-avisos", items.length > 0);
+  document.body.style.setProperty("--avH", items.length ? box.offsetHeight + 8 + "px" : "0px");
+}
+$("#avisos").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; const a = b.closest(".av"); avisosSeen[a.dataset.k] = 1; try { localStorage.setItem("papa.avisos", JSON.stringify(avisosSeen)); } catch (x) {} a.remove(); document.body.style.setProperty("--avH", $("#avisos").offsetHeight ? $("#avisos").offsetHeight + 8 + "px" : "0px"); });
+addEventListener("online", loadAvisos); setInterval(() => { if (navigator.onLine && document.visibilityState === "visible") loadAvisos(); }, 300000);
+
 /* ---------- Paneles ---------- */
-function closePanels() { $("#layers").hidden = true; $("#info").hidden = true; $("#steps").hidden = true; }
+function closePanels() { $("#layers").hidden = true; $("#info").hidden = true; $("#steps").hidden = true; $("#where").hidden = true; }
 document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = closePanels));
 $("#btnLayers").onclick = () => { const h = !$("#layers").hidden; closePanels(); if (!h) { $("#layers").hidden = false; refreshOffState(); } };
 $("#btnInfo").onclick = () => { const h = !$("#info").hidden; closePanels(); if (!h) $("#info").hidden = false; };
+$("#btnNorth").onclick = () => animateTo({ cx: view.cx, cy: view.cy, z: view.z, rot: 0 }, 300);
 $("#btnFit").onclick = () => { setFollow(false); fitView(true); };
 function layout() {
   const sh = $("#sheet"), hud = $("#hud");
@@ -655,6 +775,7 @@ function buildInfo() {
   $("#infoTitle").textContent = data.meta.titulo;
   const sw = (c, t) => `<div class="row"><span class="sw" style="background:${c};margin:0"></span><label>${t}</label></div>`;
   $("#infoBody").innerHTML = `
+    <img src="img/wordmark-dorado.svg" class="wm" alt="Bienvenidos todos · Vayan y anuncien">
     <p class="small">Misa y vigilia · <b>10 de noviembre de 2026</b> · Plano act. 14/10/2026</p>
     <table class="cap">
       <tr><td>Capacidad predio FAdeA (49 cuadrantes)</td><td>686.000</td></tr>
@@ -669,10 +790,17 @@ function buildInfo() {
     <div class="row"><span class="badge" style="background:#15803d;margin:0">SE</span><label>Salida de emergencia</label></div>
     <div class="row"><span class="badge" style="background:#7f1d1d;margin:0">H</span><label>Hospital modular / de pronta atención</label></div>
     <h2>Importante</h2>
-    <p class="small">• La ruta va <b>por los pasillos</b>: los cuadrantes solo se cruzan si estás adentro o es tu destino. Papa Fest (L–P) se alcanza por el Ingreso Norte y la calle peatonal. El perímetro, la calle y los sentidos de circulación son aproximados.<br>
-    • Los subsectores de C1 y D1 no tienen uso detallado en el plano oficial.<br>
-    • El GPS en multitudes puede tener error de varios metros; mirá el valor ± en la barra superior.<br>
-    • Datos: Geoportal de la Municipalidad de Córdoba. App no oficial.</p>`;
+    <p class="small">• Mapa <b>no oficial</b>, de referencia interna para el equipo de voluntarios y voluntarias. Se basa en el mapa de la Municipalidad de Córdoba y en el mapa distribuido por la coordinación de voluntarios y voluntarias.<br>
+    • Hasta FAdeA se llega a pie por la vía pública (Circunvalación está cortada al tránsito). Adentro, la ruta sigue <b>los pasillos</b>; los cuadrantes solo se cruzan si es tu destino o estás adentro.<br>
+    • Cada persona entra por el ingreso que le corresponde. Las <b>entradas protocolares</b> siguen las indicaciones recibidas con los pases.<br>
+    • Adentro cada sector usa su pulsera, y solo se sale al baño en los horarios que permita el control de cada cuadrante o patio.<br>
+    • <b>C1 (Clero)</b> y <b>D1 (Autoridades)</b> son los cuadrantes completos; sus subsectores forman parte de ellos.<br>
+    • Las distancias al escenario y a las pantallas son <b>en línea recta</b>, no recorridos.<br>
+    • Los pasos de la ruta son <b>referenciales</b>. El GPS en multitudes puede tener error de varios metros.<br>
+    • Podés girar el mapa con dos dedos; el botón de brújula lo vuelve al norte.</p>
+    <div class="aviso"><b>Aviso</b><p>El trazado y la logística de movimiento dentro del predio dependerán, en última instancia, de las indicaciones de seguridad y del equipo de coordinación del voluntariado para la Visita Papal. Prevalecen siempre sus indicaciones.</p></div>
+    <p class="small">Versión ${esc(C.BUILD)} · Mapa no oficial para el equipo de voluntarios y voluntarias.</p>
+    <button class="wide ghost" id="reopenWelcome">Ver aviso e instalación</button>`;
 }
 
 /* ---------- Offline: mapa base y estado ---------- */
@@ -682,14 +810,17 @@ function baseTileList() {
   return out;
 }
 async function refreshOffState() {
-  const el = $("#offState"); let msg = [];
-  msg.push(self.__swReady ? "Plano y puntos: <b>guardados ✔</b>" : "Plano y puntos: instalando…");
+  const el = $("#offState"), local = !/^https?:/.test(C.TILE_URL), msg = [];
+  msg.push(self.__swReady ? "App, plano y rutas: <b>guardados ✔</b>" : "App, plano y rutas: instalando…");
   try {
     const list = baseTileList(); let n = 0;
-    if (typeof caches !== "undefined") { const c = await caches.open(C.CACHE_TILES); const keys = new Set((await c.keys()).map((r) => r.url)); n = list.filter(([z, x, y]) => keys.has(new URL(tileUrl(z, x, y), location.href).href)).length; }
-    msg.push(`Mapa base: <b>${n}/${list.length}</b> mosaicos${n >= list.length ? " ✔" : ""}`);
+    if (typeof caches !== "undefined") {
+      if (local) { for (const [z, x, y] of list) if (await caches.match(new URL(tileUrl(z, x, y), location.href).href)) n++; }
+      else { const c = await caches.open(C.CACHE_TILES); const keys = new Set((await c.keys()).map((r) => r.url)); n = list.filter(([z, x, y]) => keys.has(new URL(tileUrl(z, x, y), location.href).href)).length; }
+    }
+    msg.push(local && n === 0 ? "Mapa base de calles: no incluido en esta versión" : `Mapa base de calles: <b>${n}/${list.length}</b> mosaicos${n >= list.length ? " ✔" : ""}`);
   } catch (e) {}
-  el.innerHTML = msg.join("<br>");
+  $("#btnDl").hidden = local; el.innerHTML = msg.join("<br>");
 }
 $("#btnDl").onclick = async () => {
   if (!navigator.onLine) { toast("Necesitás conexión para descargar el mapa base."); return; }
@@ -716,24 +847,92 @@ function setNet() {
 }
 addEventListener("online", setNet); addEventListener("offline", setNet);
 
+/* ---------- Bienvenida, aviso e instalación ---------- */
+const UA = navigator.userAgent || "";
+const isIOS = /iPad|iPhone|iPod/.test(UA) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isAndroid = /Android/i.test(UA);
+const inApp = /FBAN|FBAV|FB_IAB|Instagram|Line\/|Twitter|MicroMessenger|Snapchat|TikTok|GSA\//i.test(UA);
+const isStandalone = () => (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+let deferredPrompt = null;
+addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); deferredPrompt = e; renderInstall(); });
+addEventListener("appinstalled", () => { deferredPrompt = null; renderInstall(); toast("App instalada ✔"); });
+function renderInstall() {
+  const box = $("#installBox"), pill = $("#instPill"), done = isStandalone(); if (!box) return;
+  pill.hidden = done;
+  let h;
+  if (done) h = `<div class="inst ok">✔ App instalada. Abrila siempre desde su ícono.</div>`;
+  else if (inApp) h = `<div class="inst warn"><b>Abrí este enlace en tu navegador</b><br>Estás dentro de otra app (Instagram, Facebook…), que no permite instalar ni usar sin conexión. Tocá ⋯ o «Abrir en el navegador» y elegí ${isIOS ? "Safari" : "Chrome"}.<button id="copyLink" class="wide ghost">Copiar enlace</button></div>`;
+  else if (deferredPrompt) h = `<div class="inst"><b>Instalala en tu celular</b> para usarla sin conexión el día del evento.<button id="doInstall" class="wide">Instalar app</button></div>`;
+  else if (isIOS) h = `<div class="inst"><b>Instalala en tu iPhone / iPad</b> (desde Safari):<ol><li>Tocá el botón <b>Compartir</b> ⬆︎ (en la barra de Safari).</li><li>Elegí <b>«Agregar a inicio»</b> (deslizá el menú hacia abajo si no lo ves).</li><li>Tocá <b>Agregar</b> y abrí la app desde el ícono.</li></ol></div>`;
+  else if (isAndroid) h = `<div class="inst"><b>Instalala en tu Android</b> (desde Chrome):<ol><li>Tocá el menú <b>⋮</b> (arriba a la derecha).</li><li>Elegí <b>«Instalar aplicación»</b> o <b>«Agregar a la pantalla principal»</b>.</li><li>Confirmá y abrila desde el ícono.</li></ol></div>`;
+  else h = `<div class="inst">Podés instalarla desde el ícono ⊕ de la barra de direcciones del navegador.</div>`;
+  if (!done) h += `<p class="small">Después de instalarla, abrila <b>una vez con internet (mejor con wifi)</b> y esperá el aviso «Lista sin conexión ✔».</p>`;
+  box.innerHTML = h;
+  const di = $("#doInstall"); if (di) di.onclick = async () => { try { deferredPrompt.prompt(); await deferredPrompt.userChoice; } catch (e) {} deferredPrompt = null; renderInstall(); };
+  const cl = $("#copyLink"); if (cl) cl.onclick = () => navigator.clipboard && navigator.clipboard.writeText(location.href.split("#")[0]).then(() => toast("Enlace copiado"));
+}
+const ACK = "papa.ack.v1";
+function openWelcome(acked) {
+  renderInstall(); $("#okAviso").checked = !!acked; $("#welcomeGo").disabled = !acked; $("#welcomeGo").textContent = acked ? "Volver al mapa" : "Entrar al mapa";
+  $("#welcome").hidden = false; $("#welcome .card").scrollTop = 0;
+}
+function initWelcome() {
+  let acked = false; try { acked = localStorage.getItem(ACK) === "1"; } catch (e) {}
+  $("#okAviso").onchange = (e) => ($("#welcomeGo").disabled = !e.target.checked);
+  $("#welcomeGo").onclick = () => { try { localStorage.setItem(ACK, "1"); } catch (e) {} $("#welcome").hidden = true; };
+  $("#instPill").onclick = () => openWelcome(true);
+  const rw = $("#reopenWelcome"); if (rw) rw.onclick = () => { closePanels(); openWelcome(true); };
+  renderInstall(); if (!acked) openWelcome(false);
+}
+let readyTries = 0;
+async function setReadyPill() {
+  const el = $("#ready");
+  try {
+    await navigator.serviceWorker.ready;
+    let ok = true, msg = "Lista sin conexión ✔";
+    if (!/^https?:/.test(C.TILE_URL)) {
+      const r = await fetch("tiles/index.json").catch(() => null);
+      if (r && r.ok) { const list = await r.json(); let n = 0; for (const p of list) if (await caches.match(new URL(p, location.href).href)) n++; ok = n >= list.length; if (!ok) msg = "Descargando mapa… " + Math.round((100 * n) / list.length) + "%"; }
+    }
+    el.hidden = false; el.textContent = msg; el.className = "pill " + (ok ? "ok" : "");
+    if (!ok && readyTries++ < 80) setTimeout(setReadyPill, 2500);
+  } catch (e) {}
+}
+let wl = null;
+async function keepAwake(on) {
+  if (on && opt.saver) return;
+  try {
+    if (on && !wl && "wakeLock" in navigator && document.visibilityState === "visible") { wl = await navigator.wakeLock.request("screen"); wl.addEventListener("release", () => (wl = null)); }
+    else if (!on && wl) { await wl.release(); wl = null; }
+  } catch (e) { wl = null; }
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && route) keepAwake(true); });
+
 /* ---------- Arranque ---------- */
 async function init() {
   buildLayers(); resize();
+  if (C.BACK_URL) { const b = $("#btnBack"); b.href = C.BACK_URL; b.textContent = "← " + (C.BACK_LABEL || "Volver"); b.hidden = false; }
   try { data = await (await fetch("data.json")).json(); }
   catch (e) { toast("No se pudieron cargar los datos. Abrí la app una vez con internet.", 8000); return; }
+  try { const ex = await (await fetch("extras.json")).json(); EXTRAS = (ex.items || []).filter((x) => x && x.id && x.pt && TYPES[x.t]).map((x) => Object.assign({ uso: x.nota || "" }, x)); } catch (e) {}
   prep(); computeFit(); fitView(false); buildInfo(); setNet();
   try {
     const nd = await (await fetch("nav.json")).json();
-    nav = self.Nav.create(nd, feats);
-    navView = { fenceW: nd.fence.map((r) => r.map((p) => G.project(p[0], p[1], 0))), calleW: nd.calle.pts.map((p) => G.project(p[0], p[1], 0)), calleM: nd.calle.w };
+    let roads = null; try { const rr = await fetch("roads.json"); if (rr.ok) roads = await rr.json(); } catch (e) {}
+    nav = self.Nav.create(nd, feats, roads);
+    DOORS = nd.doors || {};
   } catch (e) { toast("No se pudo cargar la red de pasillos: las rutas no estarán disponibles.", 7000); }
   const id = decodeURIComponent((location.hash || "").slice(1));
   const f = id && feats.find((x) => x.id === id);
   if (f) select(f); else invalidate();
+  initWelcome(); applyOpts(); loadAvisos();
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
   if ("serviceWorker" in navigator) {
+    const had = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener("controllerchange", () => { if (had) toast("Hay una versión nueva del mapa. Cerrá y volvé a abrir la app para usarla.", 9000); });
     navigator.serviceWorker.register("sw.js").catch(() => {});
     navigator.serviceWorker.ready.then(() => {
-      self.__swReady = true;
+      self.__swReady = true; setReadyPill();
       try { if (!localStorage.getItem("papa.offlineToast")) { localStorage.setItem("papa.offlineToast", "1"); toast("Listo: el plano funciona sin conexión ✔"); } } catch (e) {}
     });
   }

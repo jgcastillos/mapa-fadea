@@ -2,7 +2,8 @@
    Reglas:
    - Los cuadrantes/subsectores/escenario están bloqueados; solo se "abren" el del origen y el del destino.
    - Desde afuera se entra por Ingreso Norte o Sur (auto / norte-invitación / sur).
-   - Papa Fest (L–P) solo se alcanza por Ingreso Norte y la calle peatonal. */
+   - Papa Fest (L–P) queda FUERA de la red: solo se da orientación (Ingreso Norte + Circunvalación, cortada al tránsito); no se inventan calles.
+   - Puertas por patio (opcional, nd.doors): si un patio tiene puerta, se entra y se sale solo por ella. */
 (function (root) {
 "use strict";
 const R = 6371008.8, D2R = Math.PI / 180, SQ2 = Math.SQRT2, WALK = 1.2;
@@ -31,7 +32,7 @@ function ringDist(x, y, ring) {
   return d;
 }
 
-function create(nd, feats) {
+function create(nd, feats, roads) {
   const lon0 = nd.origin[0], lat0 = nd.origin[1];
   const mx = R * Math.cos(lat0 * D2R) * D2R, my = R * D2R;
   const toXY = (ll) => [(ll[0] - lon0) * mx, (ll[1] - lat0) * my];
@@ -71,7 +72,7 @@ function create(nd, feats) {
   for (const f of feats) { if (f.ring) rings.set(f, f.ring.map(toXY)); else pts.set(f, toXY(f.pt)); }
   const nameable = feats.filter((f) => NAMEABLE[f.t]);
   const ingresoFeats = feats.filter((f) => f.t === "ingreso");
-  const calleXY = nd.calle.pts.map(toXY), calleHalf = nd.calle.w / 2;
+  const doorsLL = nd.doors || {};
   const pfRings = (nd.pf || []).map((r) => r.map(toXY));
   const accFeat = (id) => feats.find((f) => f.id === id);
   const cellOf = (x, y) => { const i = Math.floor((x - X0) / CELL), j = Math.floor((y - Y0) / CELL); return i < 0 || j < 0 || i >= nx || j >= ny ? -1 : j * nx + i; };
@@ -86,19 +87,72 @@ function create(nd, feats) {
         const d = (i + 0.5 - u) ** 2 + (j + 0.5 - v) ** 2; if (d < bd) { bd = d; best = k; } } }
     return best < 0 ? null : { idx: best, d: Math.sqrt(bd) * CELL };
   }
-  function distCalle(x, y) { let d = Infinity; for (let i = 0; i + 1 < calleXY.length; i++) d = Math.min(d, ptSegDist(x, y, calleXY[i][0], calleXY[i][1], calleXY[i + 1][0], calleXY[i + 1][1])); return d; }
 
   /* ---- salidas de la red hacia terreno abierto (SE y calle) ---- */
   const exits = [];
   for (const f of feats) if (f.t === "se") { const xy = pts.get(f), s = nearestPass(xy[0], xy[1], 8); if (s) exits.push({ idx: s.idx, xy, kind: "se", id: f.id }); }
-  for (let i = 0; i + 1 < calleXY.length; i++) {
-    const a = calleXY[i], b = calleXY[i + 1], L = Math.hypot(b[0] - a[0], b[1] - a[1]), n = Math.max(1, Math.round(L / 25));
-    for (let t = 0; t <= n; t++) { const x = a[0] + ((b[0] - a[0]) * t) / n, y = a[1] + ((b[1] - a[1]) * t) / n, s = nearestPass(x, y, 8); if (s) exits.push({ idx: s.idx, xy: [x, y], kind: "calle" }); }
-  }
+  const doorOf = {};   // class -> { idx, xy }
+  for (const f of feats) { const ll = doorsLL[f.id], c = zoneClass[f.id]; if (!ll || !c) continue;
+    const xy = toXY(ll), s = nearestPass(xy[0], xy[1], 8); if (s) doorOf[c] = { idx: s.idx, xy: cellXY(s.idx), door: xy }; }
   const gates = {};
   for (const [k, id] of [["N", "ACC-N"], ["S", "ACC-S"]]) {
     const f = accFeat(id); if (!f) continue; const xy = pts.get(f), s = nearestPass(xy[0], xy[1], 15);
     if (s) gates[k] = { idx: s.idx, xy, name: f.name };
+  }
+
+  /* ---- calles reales (opcional: roads.json de OpenStreetMap). Se usan SOLO fuera del predio. ---- */
+  const RD = (function () {
+    if (!roads || !roads.nodes || !roads.ways) return null;
+    const X = [], Y = [], adj = [];
+    roads.nodes.forEach((ll) => { const q = toXY(ll); X.push(q[0]); Y.push(q[1]); adj.push([]); });
+    const add = (a, b, w, nm) => { adj[a].push([b, w, nm]); adj[b].push([a, w, nm]); };
+    for (const w of roads.ways) {
+      const nm = w.n || "", p = w.p;
+      for (let i = 0; i + 1 < p.length; i++) {
+        const a = p[i], b = p[i + 1], L = Math.hypot(X[b] - X[a], Y[b] - Y[a]), n = Math.max(1, Math.ceil(L / 25));
+        let prev = a;
+        for (let k = 1; k <= n; k++) {
+          let cur = b;
+          if (k < n) { cur = X.length; X.push(X[a] + ((X[b] - X[a]) * k) / n); Y.push(Y[a] + ((Y[b] - Y[a]) * k) / n); adj.push([]); }
+          add(prev, cur, Math.hypot(X[cur] - X[prev], Y[cur] - Y[prev]), nm); prev = cur;
+        }
+      }
+    }
+    const G = new Map(), key = (x, y) => Math.floor(x / 100) * 100003 + Math.floor(y / 100);
+    for (let i = 0; i < X.length; i++) if (adj[i].length) { const k = key(X[i], Y[i]); (G.get(k) || G.set(k, []).get(k)).push(i); }
+    function nearest(xy, maxD) {
+      let best = -1, bd = maxD * maxD; const r = Math.ceil(maxD / 100), cx = Math.floor(xy[0] / 100), cy = Math.floor(xy[1] / 100);
+      for (let i = cx - r; i <= cx + r; i++) for (let j = cy - r; j <= cy + r; j++) { const l = G.get(i * 100003 + j); if (!l) continue;
+        for (const n of l) { const d = (X[n] - xy[0]) ** 2 + (Y[n] - xy[1]) ** 2; if (d < bd) { bd = d; best = n; } } }
+      return best;
+    }
+    const N2 = X.length, g2 = new Float64Array(N2), cm = new Int32Array(N2), cn = new Array(N2), sn = new Uint32Array(N2), cl = new Uint32Array(N2); let gn = 0;
+    function path(a, b, maxSnap) {
+      const s0 = nearest(a, maxSnap), t0 = nearest(b, maxSnap); if (s0 < 0 || t0 < 0) return null;
+      gn++; hn = 0; sn[s0] = gn; g2[s0] = 0; cm[s0] = -1; hpush(Math.hypot(X[s0] - X[t0], Y[s0] - Y[t0]), s0); let found = false;
+      while (hn) {
+        const u = hpop(); if (cl[u] === gn) continue; cl[u] = gn; if (u === t0) { found = true; break; }
+        for (const [v, w, nm] of adj[u]) { if (cl[v] === gn) continue; const g = g2[u] + w;
+          if (sn[v] !== gn || g < g2[v]) { sn[v] = gn; g2[v] = g; cm[v] = u; cn[v] = nm; hpush(g + Math.hypot(X[v] - X[t0], Y[v] - Y[t0]), v); } }
+      }
+      if (!found) return null;
+      const out = []; for (let k = t0; k >= 0; k = cm[k]) out.push({ xy: [X[k], Y[k]], nm: k === s0 ? "" : cn[k] }); out.reverse();
+      if (out.length > 1) out[0].nm = out[1].nm;
+      return out;
+    }
+    return { path };
+  })();
+  const SNAP_ROAD = 300;
+  // tramo EXTERIOR entre a y b: por calles reales si hay datos; si no, una línea recta orientativa.
+  // Los empalmes (kind "link") son «calles falsas»: se dibujan casi transparentes.
+  function outLegs(a, b, fallback) {
+    const P = RD ? RD.path(a, b, SNAP_ROAD) : null;
+    if (!P) return [{ a, b, kind: fallback }];
+    const legs = [], d = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+    if (d(a, P[0].xy) > 2) legs.push({ a, b: P[0].xy, kind: "link" });
+    for (let i = 1; i < P.length; i++) legs.push({ a: P[i - 1].xy, b: P[i].xy, kind: "street", nm: P[i].nm });
+    const last = P[P.length - 1].xy; if (d(last, b) > 2) legs.push({ a: last, b, kind: "link" });
+    return legs;
   }
 
   /* ---- búsqueda A* ---- */
@@ -162,11 +216,12 @@ function create(nd, feats) {
   function nearPF(xy) {
     for (const r of pfRings) { if (inRing(xy[0], xy[1], r) || ringDist(xy[0], xy[1], r) < 80) return true; } return false;
   }
+  const nearPF2 = (xy) => pfRings.some((r) => inRing(xy[0], xy[1], r) || ringDist(xy[0], xy[1], r) < 15);
   function destOf(f) {
     const ll = llOf(f), xy = toXY(ll);
     if (f.ring) {
       const rg = rings.get(f), c = zoneClass[f.id];
-      if (c) { const o = c * 4; return { kind: "zone", cls: c, open: [c], gbox: [zbb[o], zbb[o + 1], zbb[o + 2], zbb[o + 3]], xy, north: f.predio === "Frente", name: f.name, f }; }
+      if (c) { const o = c * 4; return { kind: "zone", cls: c, door: doorOf[c] || null, open: doorOf[c] ? [] : [c], gbox: [zbb[o], zbb[o + 1], zbb[o + 2], zbb[o + 3]], xy, north: f.predio === "Frente", name: f.name, f }; }
       // polígono caminable (ingresos): objetivo = celdas de pasillo dentro del polígono
       const xs = rg.map((p) => p[0]), ys = rg.map((p) => p[1]), idxs = [];
       const i0 = Math.max(0, Math.floor((Math.min(...xs) - X0) / CELL)), i1 = Math.min(nx - 1, Math.floor((Math.max(...xs) - X0) / CELL));
@@ -185,7 +240,7 @@ function create(nd, feats) {
   const titleOf = (f) => (f.t === "ps" ? "Puesto sanitario " + f.id : f.t === "se" ? "Salida de emergencia " + f.id : f.name);
   function analyzeOrigin(ll) {
     const xy = toXY(ll), k = cellOf(xy[0], xy[1]);
-    if (k >= 0) { const c = cls[k]; if (c === 1) return { mode: "net", idx: k, open: [], xy }; if (c >= 2) return { mode: "net", idx: k, open: [c], xy, zone: c }; }
+    if (k >= 0) { const c = cls[k]; if (c === 1) return { mode: "net", idx: k, open: [], xy }; if (c >= 2) { const d = doorOf[c]; return d ? { mode: "net", idx: d.idx, open: [], xy, zone: c, viaDoor: d } : { mode: "net", idx: k, open: [c], xy, zone: c }; } }
     const s = nearestPass(xy[0], xy[1], 15);
     if (s) return { mode: "net", idx: s.idx, open: [], xy, snapped: s.d };
     return { mode: "outside", xy };
@@ -196,9 +251,10 @@ function create(nd, feats) {
     setPass(open.concat(dest.open));
     if (dest.kind === "outside") return solveExit(sidx, dest);
     let marked = [];
-    if (dest.kind === "zone") { const [a, b, c, d] = dest.gbox; for (let j = b; j <= d; j++) for (let i = a; i <= c; i++) { const k = j * nx + i; if (cls[k] === dest.cls) { goalMark[k] = 1; marked.push(k); } } }
+    if (dest.kind === "zone" && dest.door) { goalMark[dest.door.idx] = 1; marked.push(dest.door.idx); }
+    else if (dest.kind === "zone") { const [a, b, c, d] = dest.gbox; for (let j = b; j <= d; j++) for (let i = a; i <= c; i++) { const k = j * nx + i; if (cls[k] === dest.cls) { goalMark[k] = 1; marked.push(k); } } }
     else for (const k of dest.idxs) { goalMark[k] = 1; marked.push(k); }
-    const g = search([{ idx: sidx, g: 0 }], dest.gbox, false);
+    const g = search([{ idx: sidx, g: 0 }], dest.door ? [dest.door.idx % nx, (dest.door.idx / nx) | 0, dest.door.idx % nx, (dest.door.idx / nx) | 0] : dest.gbox, false);
     for (const k of marked) goalMark[k] = 0;
     if (g < 0) return dest.xy ? solveExit(sidx, dest) : null;
     return { cells: trace(g), cost: gA[g] };
@@ -218,7 +274,6 @@ function create(nd, feats) {
   /* ---- nombres de lugares e instrucciones ---- */
   function placeName(xy) {
     for (const f of ingresoFeats) if (inRing(xy[0], xy[1], rings.get(f))) return "por el " + f.name;
-    if (distCalle(xy[0], xy[1]) <= calleHalf + 2) return "por la calle peatonal (Av. Fuerza Aérea)";
     const k = cellOf(xy[0], xy[1]);
     if (k >= 0 && cls[k] >= 2) { const f = nameable.find((q) => zoneClass[q.id] === cls[k]); if (f) return "dentro de " + f.id; }
     const ds = nameable.map((f) => ({ id: f.id, d: ringDist(xy[0], xy[1], rings.get(f)) })).sort((a, b) => a.d - b.d);
@@ -245,15 +300,17 @@ function create(nd, feats) {
       const pl = {};
       if (L.kind === "net") { const n = Math.max(1, Math.min(7, Math.ceil(d / 60)));
         for (let i = 0; i < n; i++) { const t = (i + 0.5) / n, nm = placeName([L.a[0] + dx * t, L.a[1] + dy * t]); pl[nm] = (pl[nm] || 0) + d / n; } }
+      else if (L.kind === "street") pl[L.nm ? "por " + L.nm : "por la calle"] = d;
+      else if (L.kind === "link") pl["tramo de conexión (orientativo)"] = d;
       else pl[L.kind === "out" ? "por fuera del recinto" : "por fuera del perímetro"] = d;
-      raw.push({ kind: L.kind, a: L.a, b: L.b, dist: d, pl });
+      raw.push({ kind: L.kind, nm: L.nm || "", a: L.a, b: L.b, dist: d, pl });
     }
     // 2) unir tramos casi rectos o muy cortos del mismo tipo
     const bearing = (s) => ((Math.atan2(s.b[0] - s.a[0], s.b[1] - s.a[1]) / D2R) + 360) % 360;
     const steps = [];
     for (const r of raw) {
       const last = steps[steps.length - 1];
-      if (last && last.kind === r.kind) {
+      if (last && last.kind === r.kind && (r.kind !== "street" || r.nm === last.nm)) {
         const t = Math.abs(((bearing(r) - last.lastB + 540) % 360) - 180);                 // giro local
         const merged = ((Math.atan2(r.b[0] - last.a[0], r.b[1] - last.a[1]) / D2R) + 360) % 360;
         const drift = Math.abs(((merged - last.firstB + 540) % 360) - 180);                // desvío acumulado
@@ -261,7 +318,7 @@ function create(nd, feats) {
           last.b = r.b; last.dist += r.dist; last.lastB = bearing(r); for (const k in r.pl) last.pl[k] = (last.pl[k] || 0) + r.pl[k]; continue;
         }
       }
-      steps.push({ kind: r.kind, a: r.a, b: r.b, dist: r.dist, pl: Object.assign({}, r.pl), firstB: bearing(r), lastB: bearing(r) });
+      steps.push({ kind: r.kind, nm: r.nm, a: r.a, b: r.b, dist: r.dist, pl: Object.assign({}, r.pl), firstB: bearing(r), lastB: bearing(r) });
     }
     // 3) rumbo, giro y texto
     steps.forEach((s, i) => {
@@ -274,9 +331,12 @@ function create(nd, feats) {
       if (s.kind === "net" && s.dist > 200 && /^junto a|perímetro/.test(s.place)) s.place = `por el borde ${sideOf([(s.a[0] + s.b[0]) / 2, (s.a[1] + s.b[1]) / 2])} del predio`;
       const prev = steps[i - 1]; s.turn = prev ? ((s.bearing - prev.bearing + 540) % 360) - 180 : 0;
       if (s.kind === "out") s.action = `Dirigite al ${gateName} (hacia el ${cardinal(s.bearing)})`;
+      else if (s.kind === "exit" && dest.north) s.action = `Seguí a pie por Circunvalación hacia ${dest.name}`;
       else if (s.kind === "exit") s.action = prev ? `Salí por el perímetro hacia ${dest.name}` : `Caminá hacia el ${cardinal(s.bearing)}`;
-      else if (!prev) s.action = `Caminá hacia el ${cardinal(s.bearing)}`;
-      else if (prev.kind === "out") s.action = `Entrá por el ${gateName}`;
+      else if (!prev) s.action = s.kind === "street" ? `Caminá por ${s.nm || "la calle"} hacia el ${cardinal(s.bearing)}` : `Caminá hacia el ${cardinal(s.bearing)}`;
+      else if (s.kind === "net" && gateName && (prev.kind === "out" || prev.kind === "link" || prev.kind === "street")) s.action = `Entrá por el ${gateName}`;
+      else if (s.kind === "street") s.action = Math.abs(s.turn) < 20 ? `Seguí por ${s.nm || "la calle"}` : `${turnText(s.turn)} y seguí por ${s.nm || "la calle"}`;
+      else if (s.kind === "link") s.action = "Continuá (tramo de conexión orientativo)";
       else s.action = turnText(s.turn);
     });
     steps.push({ kind: "end", dist: 0, action: "Llegás a " + dest.name, final: true, at: legs.length ? legs[legs.length - 1].b : null });
@@ -287,16 +347,25 @@ function create(nd, feats) {
   function route(oll, f, opts) {
     opts = opts || {}; const mode = opts.ingreso || "auto", notes = [];
     const dest = destOf(f), org = analyzeOrigin(oll);
+    const orgPF = nearPF2(org.xy);                          // origen dentro de Papa Fest (fuera de la red de FAdeA)
     let plan = null, gateKey = null;
     const orgIsDest = org.mode === "net" && dest.kind === "zone" && org.zone === dest.cls;
-    if (org.mode === "net") {
+    const gateGoal = (g) => ({ kind: "cells", idxs: [g.idx], gbox: [g.idx % nx, (g.idx / nx) | 0, g.idx % nx, (g.idx / nx) | 0], open: [], xy: g.xy });
+    if (dest.north && !orgPF) {        // Papa Fest: Ingreso Norte + Circunvalación (solo orientación, sin inventar ruta)
+      const g = gates.N; if (!g) return { ok: false, msg: "No encontré un camino hasta ese punto." };
+      let r = null;
+      if (org.mode === "net") r = solve(org.idx, org.open, gateGoal(g));
+      if (r) { r.exit = { from: g.xy, to: dest.xy, kind: "pf" }; plan = { r, start: org.xy }; }
+      else { plan = { r: { cells: [g.idx], cost: 0, exit: { from: g.xy, to: dest.xy, kind: "pf" } }, start: g.xy, outFrom: org.xy }; gateKey = "N"; }
+    } else if (org.mode === "net" && !orgPF) {
       const r = orgIsDest ? { cells: [org.idx], cost: 0 } : solve(org.idx, org.open, dest);
-      if (r) plan = { r, start: org.xy };
+      if (r) plan = { r, start: org.viaDoor ? org.viaDoor.xy : org.xy };
+    } else if (org.mode === "net" && orgPF && dest.north) {
+      const r = solve(org.idx, org.open, dest); if (r) plan = { r, start: org.xy };
     }
-    if (!plan) {   // origen fuera del recinto (o sin camino): entrar por un ingreso
+    if (!plan) {   // origen fuera del recinto (o en Papa Fest hacia FAdeA): entrar por un ingreso
       let keys = ["N", "S"];
-      if (dest.north) { keys = ["N"]; if (mode === "S") notes.push("Papa Fest solo se alcanza por el Ingreso Norte y la calle peatonal."); }
-      else if (mode === "N") keys = ["N"]; else if (mode === "S") keys = ["S"];
+      if (mode === "N") keys = ["N"]; else if (mode === "S") keys = ["S"];
       let best = null, bs = Infinity;
       for (const k of keys) {
         const g = gates[k]; if (!g) continue;
@@ -306,11 +375,12 @@ function create(nd, feats) {
       }
       if (!best) return { ok: false, msg: "No encontré un camino hasta ese punto." };
       gateKey = best.k; plan = { r: best.r, start: gates[best.k].xy, outFrom: org.xy };
-      if (mode === "N" && !dest.north) notes.push("Ingreso por el Norte (invitados).");
+      if (orgPF) notes.push("Desde Papa Fest se llega a FAdeA a pie por Circunvalación (cortada al tránsito); el primer tramo es solo orientativo.");
     }
     // waypoints
     const cells = plan.r.cells; setPass((plan.outFrom ? [] : org.open).concat(dest.open));
     const wp = smooth(cells).map(cellXY); wp[0] = plan.start.slice();
+    if (org.viaDoor && !plan.outFrom) wp.unshift(org.xy.slice());
     let endXY;
     if (plan.r.exit) endXY = plan.r.exit.from;
     else if (dest.kind === "zone") {   // entrar ~12 m hacia adentro del cuadrante
@@ -320,11 +390,13 @@ function create(nd, feats) {
     } else endXY = dest.kind === "cells" && !dest.poly ? dest.xy : wp[wp.length - 1];
     wp[wp.length - 1] = endXY;
     const legs = [];
-    if (plan.outFrom) legs.push({ a: plan.outFrom, b: wp[0], kind: "out" });
+    if (plan.outFrom) legs.push(...outLegs(plan.outFrom, wp[0], "out"));
     for (let i = 0; i + 1 < wp.length; i++) legs.push({ a: wp[i], b: wp[i + 1], kind: "net" });
-    if (plan.r.exit) legs.push({ a: endXY, b: plan.r.exit.to, kind: "exit" });
-    if (plan.r.exit) notes.push("Tramo final por fuera del perímetro, en línea recta (terreno abierto): tomalo como orientación.");
-    if (dest.north && !notes.length) notes.push("Papa Fest: se accede por el Ingreso Norte y la calle peatonal.");
+    if (plan.r.exit) legs.push(...outLegs(endXY, plan.r.exit.to, "exit"));
+    const hasStreet = legs.some((l) => l.kind === "street");
+    if (dest.north) notes.push(hasStreet ? "Papa Fest: se sale por el Ingreso Norte y se sigue a pie por Circunvalación y las calles (cortadas al tránsito, peatonales). Recorrido de referencia." : "Papa Fest está fuera del predio FAdeA: se sale por el Ingreso Norte y se sigue a pie por Circunvalación (cortada al tránsito). Este mapa no trae las calles, así que el último tramo es solo una orientación en línea recta.");
+    else if (plan.r.exit && !hasStreet) notes.push("Tramo final por fuera del perímetro, en línea recta (terreno abierto): tomalo como orientación.");
+    if (hasStreet && !dest.north) notes.push("Tramo por la vía pública: calles cortadas al tránsito durante el evento. Recorrido de referencia.");
     const gateName = gateKey ? gates[gateKey].name : "";
     const steps = makeSteps(legs, dest, gateName);
     const segs = []; let total = 0;
@@ -341,7 +413,7 @@ function create(nd, feats) {
     const xy = toXY(ll), k = cellOf(xy[0], xy[1]), c = k < 0 ? 0 : cls[k];
     return { kind: c === 1 ? "pasillo" : c >= 2 ? "zona" : "fuera", zone: c >= 2 ? nd.zones[c - 2] : null, place: placeName(xy) };
   }
-  return { route, pointInfo, classAt, toXY, toLL, fence: nd.fence, calle: nd.calle, zoneClass, _dbg: { cls, clear, nx, ny, CELL, X0, Y0, gates, exits } };
+  return { route, pointInfo, classAt, toXY, toLL, fence: nd.fence, doors: doorsLL, zoneClass, _dbg: { cls, clear, nx, ny, CELL, X0, Y0, gates, exits } };
 }
 
 const api = { create };

@@ -7,9 +7,11 @@
 <meta name="description" content="Mapa del predio FAdeA para la visita del Papa León XIV en Córdoba. Funciona sin conexión.">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Mapa Papa">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Mapa Visita Papa · FAdeA</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -26,17 +28,23 @@
     <button data-near="se">⇥ Salida cercana</button>
     <button data-near="hosp">H Hospital</button>
     <button data-near="acc">⇒ Ingreso</button>
+    <button id="chipWhere">📍 ¿Dónde estoy?</button>
+    <button id="chipPapa">📏 ¿A cuánto del Papa?</button>
   </div>
   <ul id="results" hidden></ul>
-  <div id="status"><span id="net" class="pill">En línea</span><span id="gps" class="pill" hidden></span></div>
+  <div id="status"><a id="btnBack" class="pill inst" hidden></a><span id="net" class="pill">En línea</span><span id="gps" class="pill" hidden></span><button id="gpsAsk" class="pill inst">📍 Activar ubicación</button><span id="ready" class="pill" hidden></span><button id="instPill" class="pill inst" hidden>⬇ Instalar</button></div>
 </header>
 
 <div id="fabs">
   <button id="btnLayers" class="fab" aria-label="Capas y descarga offline">☰</button>
   <button id="btnInfo" class="fab" aria-label="Información y leyenda">i</button>
+  <button id="btnNorth" class="fab" aria-label="Volver al norte" hidden><span style="display:inline-block">🧭</span></button>
   <button id="btnFit" class="fab" aria-label="Ver todo el predio">⤢</button>
   <button id="btnLocate" class="fab primary" aria-label="Mi ubicación">◎</button>
 </div>
+
+<div id="avisos"></div>
+<div id="measure" hidden></div>
 
 <section id="hud" hidden>
   <div id="arrow" aria-hidden="true">➤</div>
@@ -58,6 +66,10 @@
 <aside id="layers" class="panel" hidden>
   <h2>Capas</h2>
   <div id="layerList"></div>
+  <h2>Pantalla</h2>
+  <div class="row sw2"><input type="checkbox" id="optDark"><label for="optDark">🌙 Modo noche (vigilia)</label></div>
+  <div class="row sw2"><input type="checkbox" id="optSaver"><label for="optSaver">🔋 Ahorro de batería</label></div>
+  <p class="small">El ahorro de batería baja la frecuencia del GPS y de la brújula, y no mantiene la pantalla encendida.</p>
   <h2>Sin conexión</h2>
   <p class="small" id="offState">Verificando…</p>
   <button id="btnDl" class="wide">Descargar mapa base (z14–17)</button>
@@ -66,9 +78,17 @@
   <button class="wide ghost" data-close="layers">Cerrar</button>
 </aside>
 
+<aside id="where" class="panel" hidden>
+  <h2>¿Dónde estoy?</h2>
+  <div id="whereBody"></div>
+  <div class="actions"><button id="whereCopy">Copiar mensaje</button><button id="whereShare" class="ghost">Compartir</button></div>
+  <button class="wide ghost" data-close="where">Cerrar</button>
+</aside>
+
 <aside id="steps" class="panel" hidden>
-  <h2>Cómo llegar</h2>
+  <h2>Cómo llegar <span class="refbadge">referencial</span></h2>
   <ol id="stepList"></ol>
+  <p class="small aviso-mini">🚶 Ruta siempre a pie. Los pasos son una referencia aproximada, no un recorrido oficial. Prevalecen las indicaciones de seguridad y del equipo de coordinación del voluntariado para la Visita Papal.</p>
   <button class="wide ghost" data-close="steps">Cerrar</button>
 </aside>
 
@@ -77,6 +97,26 @@
   <div id="infoBody"></div>
   <button class="wide ghost" data-close="info">Cerrar</button>
 </aside>
+
+<section id="welcome" class="overlay" hidden>
+  <div class="card">
+    <img src="img/logo-vertical.svg" alt="Bienvenidos todos · Vayan y anuncien" class="logo">
+    <h1>Mapa del predio FAdeA</h1>
+    <p class="sub">Vigilia y misa · Visita del Papa León XIV · Córdoba</p>
+    <div id="installBox"></div>
+    <div class="aviso">
+      <b>Aviso importante</b>
+      <p>Este es un mapa <b>no oficial</b>, de referencia interna para el equipo de <b>voluntarios y voluntarias</b>. Está basado en el mapa de la Municipalidad de Córdoba y en el mapa distribuido por la coordinación de voluntarios y voluntarias (mapa del predio FAdeA). Las rutas son siempre <b>a pie</b> y orientativas.</p>
+      <p>Las <b>entradas protocolares</b> siguen las indicaciones que recibieron junto con sus pases.</p>
+      <p>El trazado y la logística de movimiento dentro del predio dependerán, en última instancia, de las <b>indicaciones de seguridad</b>, del <b>equipo de coordinación del voluntariado para la Visita Papal</b> y de las autoridades del evento. Ante cualquier diferencia, <b>prevalecen sus indicaciones</b>.</p>
+    </div>
+    <div class="aviso"><b>Ubicación (GPS)</b>
+      <p>Para que te guíe, activá la <b>ubicación</b> del teléfono y permitila cuando el navegador te lo pida. El GPS funciona <b>sin internet</b>. Si tenés <b>modo avión</b>, dejá la ubicación encendida (en Android a veces hay que volver a activarla) y esperá unos minutos al aire libre para que tome señal.</p>
+    </div>
+    <label class="chk"><input type="checkbox" id="okAviso"> Leí y entiendo el aviso</label>
+    <button id="welcomeGo" class="wide" disabled>Entrar al mapa</button>
+  </div>
+</section>
 
 <div id="toast" role="status" aria-live="polite" hidden></div>
 

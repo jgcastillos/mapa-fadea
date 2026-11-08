@@ -1,0 +1,25 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: geolocation=(self), camera=(), microphone=()
+
+/sw.js
+  Cache-Control: no-cache
+
+/index.html
+  Cache-Control: no-cache
+
+/manifest.webmanifest
+  Cache-Control: no-cache
+
+/data.json
+  Cache-Control: no-cache
+
+/nav.json
+  Cache-Control: no-cache
+
+/tiles/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/avisos.json
+  Cache-Control: no-cache

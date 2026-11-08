@@ -1,0 +1,9 @@
+Para publicar un aviso, editá app/avisos.json y hacé push. Ejemplo:
+{
+  "actualizado": "10/11 18:30",
+  "items": [
+    { "id": "ing-sur", "nivel": "alerta", "texto": "Ingreso Sur cerrado: usar el Ingreso Norte.", "hasta": "2026-11-11T12:00:00-03:00" },
+    { "id": "agua", "nivel": "info", "texto": "Hay agua en la carpa de descanso." }
+  ]
+}
+nivel: "alerta" (rojo) o "info". "hasta" es opcional. Si cambiás el texto de un aviso, cambiá también "actualizado" para que vuelva a mostrarse a quien lo cerró.
