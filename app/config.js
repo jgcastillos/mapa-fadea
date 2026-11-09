@@ -2,7 +2,7 @@
    publicar para uso masivo (la política de OpenStreetMap no admite tráfico masivo ni descargas en bloque). */
 self.APP_CONFIG = {
   // Mosaicos propios dentro de la app (se generan con tools/fetch_tiles.py). Si querés usar un servidor remoto, poné aquí su URL https://…
-  BUILD: "mw8r5mcf",
+  BUILD: "mw9gpqwn",
   // Si la usás dentro de la app de voluntarios (subcarpeta), poné acá a dónde vuelve el botón «← Voluntarios». Ej.: "../" o "/". Vacío = sin botón.
   BACK_URL: "",
   BACK_LABEL: "Voluntarios",

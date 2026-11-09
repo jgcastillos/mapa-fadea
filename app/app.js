@@ -20,6 +20,7 @@ const TYPES = {
   hosp:       { label: "Hospital",                color: "#7f1d1d", layer: "hosp" },
   acc:        { label: "Ingreso",                 color: "#0369a1", layer: "acc" },
   pantalla:   { label: "Pantalla y audio",        color: "#0e7490", layer: "pant" },
+  base:       { label: "Centro operativo",        color: "#7c3aed", layer: "ext" },
   sacristia:  { label: "Sacristía",               color: "#dc2626", layer: "sac" },
   bateria:    { label: "Batería de servicios",    color: "#92400e", layer: "bt" },
   servicio:   { label: "Instalación",             color: "#64748b", layer: "serv" },
@@ -81,11 +82,22 @@ function toast(msg, ms = 3800) {
 }
 
 /* ---------- Datos ---------- */
-let EXTRAS = [], DOORS = {};
-const titleOf = (f) => f.t === "ps" ? "Puesto sanitario " + f.id : f.t === "se" ? "Salida de emergencia " + f.id : f.name;
-const shortOf = (f) => f.t === "ps" ? f.id : f.t === "se" ? f.id : f.t === "sector" ? f.id.split(" · ")[1] || f.id : f.name;
+let EXTRAS = [], DOORS = {}, sharedPos = null;
+const LOC_TYPES = { ps: "Puesto sanitario", se: "Salida de emergencia", pantalla: "Pantalla", sacristia: "Sacristía", bateria: "Baños (batería de servicios)" };
+const locTxt = (f) => (f.cuad ? (f.cuadIn ? "cuadrante " : "junto al cuadrante ") + f.cuad : "");
+const titleOf = (f) => LOC_TYPES[f.t] ? LOC_TYPES[f.t] + (f.cuad ? " · " + locTxt(f) : " " + f.id) : f.name;
+const shortOf = (f) => LOC_TYPES[f.t] ? f.cuad || f.id : f.t === "sector" ? f.id.split(" · ")[1] || f.id : f.name;
 
-function prep() {
+function prep() { prep0(); assignCuads(); }
+function assignCuads() {
+  const sq = []; for (const f of feats) if (f.ring && (f.t === "cuadrante" || f.t === "clero" || f.t === "autoridades" || f.t === "frente")) sq.push(f);
+  for (const f of feats) if (LOC_TYPES[f.t] && f.pt) {   // en qué cuadrante (o junto a cuál) está cada punto
+    let ll = f.pt, hit = sq.find((q) => G.inRing(ll, q.ring)); f.cuadIn = !!hit;
+    if (!hit) { let bd = 250; for (const q of sq) { const d = G.distance(ll, q.ll); if (d < bd) { bd = d; hit = q; } } }
+    f.cuad = hit ? (hit.t === "clero" ? "C1" : hit.t === "autoridades" ? "D1" : hit.id) : "";
+  }
+}
+function prep0() {
   feats = data.features.concat(EXTRAS);
   bounds = data.meta.bounds;
   for (const f of feats) {
@@ -327,13 +339,17 @@ function pointVisible(f) {
   if ((f.t === "pantalla" || f.t === "bateria") && view.z < 16.2) return false;
   return true;
 }
+const ICONS = {};   // íconos propios opcionales: poné img/map/<tipo>.svg (o .png) y se usan solos
+function loadIcons() { for (const t of Object.keys(TYPES)) for (const ext of ["svg", "png"]) { const im = new Image(); im.onload = () => { if (!ICONS[t]) { ICONS[t] = im; invalidate(); } }; im.src = `img/map/${t}.${ext}`; } }
 function drawPoint(f, S) {
   const [x, y] = scr(f.cw[0], f.cw[1], S);
   if (x < -30 || y < -30 || x > W + 30 || y > H + 30) return;
-  const big = f.t === "hosp" || f.t === "acc" || f.t === "ref";
+  const big = f.t === "hosp" || f.t === "acc" || f.t === "ref" || f.t === "base";
   const r = big ? 14 : clamp(6 + (view.z - 15.6) * 2.2, 8, 13);
   ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.fillStyle = TYPES[f.t].color;
-  if (f.t === "hosp") {
+  const ic = ICONS[f.t];
+  if (ic) { ctx.beginPath(); ctx.arc(x, y, r + 1, 0, 6.2832); ctx.fillStyle = "#fff"; ctx.fill(); ctx.drawImage(ic, x - r, y - r, 2 * r, 2 * r); }
+  else if (f.t === "hosp") {
     ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x - r, y - r, 2 * r, 2 * r, 5) : ctx.rect(x - r, y - r, 2 * r, 2 * r);
     ctx.fill(); ctx.stroke(); ctx.fillStyle = "#fff";
     ctx.font = "800 16px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("H", x, y + 1);
@@ -344,8 +360,8 @@ function drawPoint(f, S) {
       const a = r * 0.5; ctx.lineWidth = Math.max(2.2, r * 0.28);
       ctx.beginPath(); ctx.moveTo(x - a, y); ctx.lineTo(x + a, y); ctx.moveTo(x, y - a); ctx.lineTo(x, y + a); ctx.stroke();
     } else {
-      ctx.font = `800 ${Math.round(r * (f.t === "acc" || f.t === "ref" ? 0.78 : f.t === "pantalla" || f.t === "bateria" ? 0.7 : 0.95))}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText(f.t === "se" ? "SE" : f.t === "pantalla" ? "PA" : f.t === "sacristia" ? "S" : f.t === "bateria" ? "BT" : f.t === "ref" ? "i" : "IN", x, y + 0.5);
+      ctx.font = `800 ${Math.round(r * (f.t === "acc" || f.t === "ref" || f.t === "base" ? 0.78 : f.t === "pantalla" || f.t === "bateria" ? 0.7 : 0.95))}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(f.t === "se" ? "SE" : f.t === "pantalla" ? "PA" : f.t === "sacristia" ? "S" : f.t === "bateria" ? "BT" : f.t === "base" ? "CO" : f.t === "ref" ? "i" : "IN", x, y + 0.5);
     }
   }
   if (big && view.z >= 14.2) {
@@ -402,7 +418,7 @@ function draw() {
   drawDoors(S);
   drawMeasure(S);
   // puntos
-  for (const t of ["se", "ps", "acc", "hosp", "ref", "bateria", "pantalla", "sacristia"]) for (const f of feats) if (f.t === t && pointVisible(f)) drawPoint(f, S);
+  for (const t of ["se", "ps", "acc", "hosp", "ref", "base", "bateria", "pantalla", "sacristia"]) for (const f of feats) if (f.t === t && pointVisible(f)) drawPoint(f, S);
   if (sel && !sel.ring) {
     const [x, y] = scr(sel.cw[0], sel.cw[1], S);
     ctx.beginPath(); ctx.arc(x, y, 20, 0, 6.2832); ctx.lineWidth = 6; ctx.strokeStyle = "#fff"; ctx.stroke();
@@ -780,7 +796,7 @@ $("#optDark").addEventListener("change", (e) => { opt.dark = e.target.checked ? 
 $("#optSaver").addEventListener("change", (e) => { opt.saver = e.target.checked; try { localStorage.setItem("papa.saver", opt.saver ? 1 : 0); } catch (x) {} applyOpts(); toast(opt.saver ? "Ahorro de batería activado" : "Ahorro de batería desactivado"); });
 
 /* ---------- ¿Dónde estoy? ---------- */
-let whereText = "";
+let whereText = "", whereSms = "";
 function whereMsg() {
   const ll = pos.ll; let zone = null;
   for (const t of ["clero", "autoridades", "cuadrante", "frente"]) { for (const f of feats) if (f.t === t && G.inRing(ll, f.ring)) { zone = f; break; } if (zone) break; }
@@ -788,22 +804,27 @@ function whereMsg() {
   if (!place && nav) { const pi = nav.pointInfo(ll); place = pi.kind === "pasillo" ? pi.place : pi.kind === "zona" ? "dentro de " + (pi.zone || "") : "fuera del predio"; }
   const ps = nearest("ps", ll), se = nearest("se", ll), st = stageF ? G.distance(ll, stageF.ll) : null;
   const L = [`Estoy ${place || "en el predio"} (GPS ±${Math.round(pos.acc)} m).`];
-  if (ps) L.push(`Puesto sanitario más cercano: ${ps.f.id} a ${G.fmtDist(ps.d)}.`);
-  if (se) L.push(`Salida de emergencia más cercana: ${se.f.id} a ${G.fmtDist(se.d)}.`);
+  if (ps) L.push(`Puesto sanitario más cercano: ${locTxt(ps.f) || ps.f.id}, a ${G.fmtDist(ps.d)}.`);
+  if (se) L.push(`Salida de emergencia más cercana: ${locTxt(se.f) || se.f.id}, a ${G.fmtDist(se.d)}.`);
   if (st != null) L.push(`Al escenario: ${G.fmtDist(st)} en línea recta.`);
   L.push(`Coordenadas: ${ll[1].toFixed(5)}, ${ll[0].toFixed(5)}`, `https://maps.google.com/?q=${ll[1].toFixed(6)},${ll[0].toFixed(6)}`);
-  return { text: L.join("\n"), place: place || "en el predio" };
+  const hh = new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const link = location.href.split("#")[0] + "#@" + ll[1].toFixed(5) + "," + ll[0].toFixed(5);
+  const plain = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "");   // sin tildes: entra en menos SMS
+  const sms = plain(`Hola, mi ubicacion a las ${hh} h es ${place || "en el predio"} (GPS +-${Math.round(pos.acc)} m). Abrila en el mapa: ${link}`);
+  return { text: L.join("\n"), place: place || "en el predio", sms };
 }
 function openWhere() {
   closePanels(); hideResults();
   if (watchId === null) startGPS();
   if (!pos) { toast("Esperando señal GPS… probá al aire libre y con la ubicación activada.", 5000); return; }
-  const m = whereMsg(); whereText = m.text;
+  const m = whereMsg(); whereText = m.text; whereSms = m.sms;
   $("#whereBody").innerHTML = `<div class="big">${esc(m.place)}</div><pre>${esc(m.text)}</pre><div class="small">Si no hay señal de datos, podés dictarlo por radio o mandarlo por mensaje de texto.</div>`;
   $("#where").hidden = false;
 }
 $("#chipWhere").addEventListener("click", openWhere);
 $("#whereCopy").onclick = () => { if (navigator.clipboard) navigator.clipboard.writeText(whereText).then(() => toast("Mensaje copiado")); else toast(whereText, 9000); };
+$("#whereSms").onclick = () => { location.href = "sms:?&body=" + encodeURIComponent(whereSms); };
 $("#whereShare").onclick = () => { if (navigator.share) navigator.share({ text: whereText }).catch(() => {}); else $("#whereCopy").click(); };
 
 /* ---------- Avisos de último momento (avisos.json, con red primero) ---------- */
@@ -991,6 +1012,8 @@ async function init() {
   try { data = await (await fetch("data.json")).json(); }
   catch (e) { toast("No se pudieron cargar los datos. Abrí la app una vez con internet.", 8000); return; }
   try { const ex = await (await fetch("extras.json")).json(); EXTRAS = (ex.items || []).filter((x) => x && x.id && (x.pt || x.ring) && TYPES[x.t]).map((x) => Object.assign({ uso: x.nota || "", aprox: 1 }, x, { nota: "" })); } catch (e) {}
+  const mh = /^#@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/.exec(location.hash || "");
+  if (mh && Math.abs(+mh[1]) <= 90 && Math.abs(+mh[2]) <= 180) { sharedPos = [+mh[2], +mh[1]]; EXTRAS.push({ id: "UBI", t: "ref", name: "Ubicación compartida", pt: sharedPos, uso: "Ubicación enviada por mensaje" }); }
   prep(); computeFit(); fitView(false); buildInfo(); setNet();
   try {
     const nd = await (await fetch("nav.json")).json();
@@ -999,10 +1022,11 @@ async function init() {
     nav = self.Nav.create(nd, feats, roads);
     DOORS = nd.doors || {};
   } catch (e) { toast("No se pudo cargar la red de pasillos: las rutas no estarán disponibles.", 7000); }
-  const id = decodeURIComponent((location.hash || "").slice(1));
+  let id = decodeURIComponent((location.hash || "").slice(1));
+  if (sharedPos) id = "UBI";
   const f = id && feats.find((x) => x.id === id);
   if (f) select(f); else invalidate();
-  initWelcome(); applyOpts(); loadAvisos();
+  initWelcome(); applyOpts(); loadAvisos(); loadIcons();
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
   if ("serviceWorker" in navigator) {
     const had = !!navigator.serviceWorker.controller;

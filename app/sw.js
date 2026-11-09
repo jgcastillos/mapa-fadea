@@ -1,11 +1,11 @@
 /* Service worker: guarda la app, los datos y los mosaicos del mapa para uso 100% offline. */
-const BUILD = "mw8r5mcf";                       // lo reemplaza tools/stamp.js en cada despliegue
+const BUILD = "mw9gpqwn";                       // lo reemplaza tools/stamp.js en cada despliegue
 const VERSION = "papa-shell-" + BUILD;
 const SHELL = ["./", "index.html", "style.css", "app.js", "geo.js", "nav.js", "config.js", "data.json", "nav.json", "extras.json",
   "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png",
   "img/logo-vertical.svg", "img/wordmark-dorado.svg", "img/isotipo.svg"];
 
-async function precacheOptional(cache) { await Promise.allSettled(["roads.json", "avisos.json"].map((p) => cache.add(new URL(p, self.registration.scope)))); }
+async function precacheOptional(cache) { await Promise.allSettled(["roads.json", "avisos.json"].concat(["ps", "se", "hosp", "acc", "pantalla", "sacristia", "bateria", "ref", "base", "escenario"].flatMap((t) => ["svg", "png"].map((e) => `img/map/${t}.${e}`))).map((p) => cache.add(new URL(p, self.registration.scope)))); }
 async function precacheTiles(cache) {              // opcional: solo si existe tiles/index.json
   try {
     const r = await fetch(new URL("tiles/index.json", self.registration.scope), { cache: "no-cache" });
