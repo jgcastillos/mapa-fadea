@@ -177,28 +177,50 @@ function flyTo(f) {
 }
 
 /* ---------- Mapa base dibujado con las calles (roads.json); no depende de servidores de mosaicos ---------- */
-let RB = null;
+let RB = null, RA = null, RL = null;
+const M0 = 156543.03392 * Math.cos((31.44 * Math.PI) / 180);   // metros por píxel de pantalla a zoom 0
+const bbOf = (pts) => { let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const q of pts) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; } return [x0, y0, x1, y1]; };
 function buildRoadBase(r) {
   if (!r || !r.nodes || !r.ways) return;
-  const P = r.nodes.map((n) => G.project(n[0], n[1], 0)); RB = [];
-  for (const w of r.ways) {
-    const pts = w.p.map((i) => P[i]); if (pts.length < 2) continue;
-    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9, len = 0;
-    for (let i = 0; i < pts.length; i++) { const q = pts[i]; if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; if (i) len += Math.hypot(q[0] - pts[i - 1][0], q[1] - pts[i - 1][1]); }
-    RB.push({ pts, bb: [x0, y0, x1, y1], nm: w.n || "", len });
-  }
+  const P = r.nodes.map((n) => G.project(n[0], n[1], 0));
+  const mk = (w, extra) => { const pts = w.p.map((i) => P[i]); if (pts.length < 2) return null; let len = 0; for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); return Object.assign({ pts, bb: bbOf(pts), len }, extra); };
+  RB = r.ways.map((w) => mk(w, { nm: w.n || "", c: w.c == null ? 2 : w.c })).filter(Boolean);
+  RA = (r.areas || []).map((w) => mk(w, { k: w.k })).filter(Boolean);
+  RL = (r.lines || []).map((w) => mk(w, { k: w.k, w: w.w || 10 })).filter(Boolean);
 }
+const AREA_STYLE = { g: ["#e3ecd2", null], t: ["#c9dcae", null], w: ["#b9d9f0", "#9cc6e4"], a: ["#d7d9dd", null], b: ["#d8d2c6", "#bdb5a5"] };
 function drawRoadBase(S) {
   if (!RB) return;
   const cs = [toWorld(0, 0), toWorld(W, 0), toWorld(0, H), toWorld(W, H)], xs = cs.map((q) => q[0]), ys = cs.map((q) => q[1]);
   const vx0 = Math.min(...xs), vx1 = Math.max(...xs), vy0 = Math.min(...ys), vy1 = Math.max(...ys);
-  const vis = RB.filter((w) => w.bb[2] >= vx0 && w.bb[0] <= vx1 && w.bb[3] >= vy0 && w.bb[1] <= vy1);
-  const lw = clamp((view.z - 13) * 1.5 + 1.5, 1.5, 9);
+  const inV = (w) => w.bb[2] >= vx0 && w.bb[0] <= vx1 && w.bb[3] >= vy0 && w.bb[1] <= vy1;
+  const trace = (w) => w.pts.forEach((p, i) => (i ? ctx.lineTo(sx(p[0], S), sy(p[1], S)) : ctx.moveTo(sx(p[0], S), sy(p[1], S))));
   ctx.lineJoin = "round"; ctx.lineCap = "round";
-  for (const pass of [0, 1]) {
-    ctx.beginPath();
-    for (const w of vis) { w.pts.forEach((p, i) => (i ? ctx.lineTo(sx(p[0], S), sy(p[1], S)) : ctx.moveTo(sx(p[0], S), sy(p[1], S)))); }
-    ctx.lineWidth = pass ? lw : lw + 2; ctx.strokeStyle = pass ? "#ffffff" : "#c3cbd6"; ctx.stroke();
+  // terreno general (campo abierto)
+  ctx.fillStyle = "#eef0e4"; ctx.fillRect(-W, -H, 3 * W, 3 * H);
+  // áreas: pasto, arboleda, agua, plataformas, edificios
+  for (const kind of ["g", "a", "t", "w", "b"]) {
+    const [fill, stroke] = AREA_STYLE[kind]; ctx.fillStyle = fill; ctx.beginPath();
+    for (const w of (RA || [])) if (w.k === kind && inV(w) && (kind !== "b" || view.z >= 15.2)) { trace(w); ctx.closePath(); }
+    ctx.fill(); if (stroke && view.z >= 16) { ctx.lineWidth = 1; ctx.strokeStyle = stroke; ctx.stroke(); }
+  }
+  // pistas, vías y cursos de agua
+  for (const w of (RL || [])) {
+    if (!inV(w)) continue; ctx.beginPath(); trace(w);
+    if (w.k === "v") { ctx.setLineDash([6, 5]); ctx.lineWidth = 1.6; ctx.strokeStyle = "#9aa3ad"; ctx.stroke(); ctx.setLineDash([]); }
+    else if (w.k === "r") { ctx.lineWidth = Math.max(2, (w.w * S) / M0); ctx.strokeStyle = "#d3d6db"; ctx.stroke(); }
+    else { ctx.lineWidth = Math.max(1.5, (w.w * S) / M0); ctx.strokeStyle = "#b9d9f0"; ctx.stroke(); }
+  }
+  // calles (con borde), de menor a mayor jerarquía
+  const base = clamp((view.z - 13) * 1.3 + 1.4, 1.4, 8), scale = [1.9, 1.35, 1, 0.55];
+  for (const c of [3, 2, 1, 0]) {
+    const list = RB.filter((w) => w.c === c && inV(w)); if (!list.length) continue;
+    const lw = base * scale[c];
+    for (const pass of [0, 1]) {
+      ctx.beginPath(); for (const w of list) trace(w);
+      if (c === 3) { if (pass) continue; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.2; ctx.strokeStyle = "#b8a99a"; ctx.stroke(); ctx.setLineDash([]); continue; }
+      ctx.lineWidth = pass ? lw : lw + 2; ctx.strokeStyle = pass ? "#ffffff" : "#c3cbd6"; ctx.stroke();
+    }
   }
 }
 function drawRoadNames(S) {
@@ -342,7 +364,7 @@ function draw() {
   if (layersOn.base) {
     drawTiles(S);
     drawRoadBase(S);
-    ctx.fillStyle = "rgba(255,255,255,.18)"; ctx.fillRect(-W, -H, 3 * W, 3 * H);
+    if (!RB) { ctx.fillStyle = "rgba(255,255,255,.18)"; ctx.fillRect(-W, -H, 3 * W, 3 * H); }
   }
   // polígonos
   for (const t of POLY_DRAW) {
