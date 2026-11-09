@@ -176,11 +176,48 @@ function flyTo(f) {
   animateTo({ cx, cy, z, rot: view.rot });
 }
 
+/* ---------- Mapa base dibujado con las calles (roads.json); no depende de servidores de mosaicos ---------- */
+let RB = null;
+function buildRoadBase(r) {
+  if (!r || !r.nodes || !r.ways) return;
+  const P = r.nodes.map((n) => G.project(n[0], n[1], 0)); RB = [];
+  for (const w of r.ways) {
+    const pts = w.p.map((i) => P[i]); if (pts.length < 2) continue;
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9, len = 0;
+    for (let i = 0; i < pts.length; i++) { const q = pts[i]; if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; if (i) len += Math.hypot(q[0] - pts[i - 1][0], q[1] - pts[i - 1][1]); }
+    RB.push({ pts, bb: [x0, y0, x1, y1], nm: w.n || "", len });
+  }
+}
+function drawRoadBase(S) {
+  if (!RB) return;
+  const cs = [toWorld(0, 0), toWorld(W, 0), toWorld(0, H), toWorld(W, H)], xs = cs.map((q) => q[0]), ys = cs.map((q) => q[1]);
+  const vx0 = Math.min(...xs), vx1 = Math.max(...xs), vy0 = Math.min(...ys), vy1 = Math.max(...ys);
+  const vis = RB.filter((w) => w.bb[2] >= vx0 && w.bb[0] <= vx1 && w.bb[3] >= vy0 && w.bb[1] <= vy1);
+  const lw = clamp((view.z - 13) * 1.5 + 1.5, 1.5, 9);
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+  for (const pass of [0, 1]) {
+    ctx.beginPath();
+    for (const w of vis) { w.pts.forEach((p, i) => (i ? ctx.lineTo(sx(p[0], S), sy(p[1], S)) : ctx.moveTo(sx(p[0], S), sy(p[1], S)))); }
+    ctx.lineWidth = pass ? lw : lw + 2; ctx.strokeStyle = pass ? "#ffffff" : "#c3cbd6"; ctx.stroke();
+  }
+}
+function drawRoadNames(S) {
+  if (!RB || view.z < 16.3) return;
+  const used = [], ls = 11;
+  for (const w of RB) {
+    if (!w.nm || w.len * S < 120) continue;
+    const m = w.pts[(w.pts.length / 2) | 0], [x, y] = scr(m[0], m[1], S);
+    if (x < 0 || y < 0 || x > W || y > H || used.some((u) => u.n === w.nm && Math.hypot(u.x - x, u.y - y) < 220)) continue;
+    used.push({ n: w.nm, x, y }); halo(w.nm, x, y, ls, "#64748b");
+  }
+}
+
 /* ---------- Tiles (mapa base opcional, con caché offline) ---------- */
 const tiles = new Map(), queue = [];
 let inflight = 0;
 const tileUrl = (z, x, y) => C.TILE_URL.replace("{z}", z).replace("{x}", x).replace("{y}", y);
 async function fetchTile(z, x, y) {
+  if (!C.TILE_URL) return null;
   const url = tileUrl(z, x, y);
   if (!/^https?:/.test(C.TILE_URL)) { try { const r = await fetch(url); if (r.ok) return createImageBitmap(await r.blob()); } catch (e) {} return null; }   // mosaicos propios: los sirve/guarda el service worker
   let resp = null;
@@ -304,6 +341,7 @@ function draw() {
   ctx.save(); ctx.translate(W / 2, H / 2); ctx.rotate(view.rot); ctx.translate(-W / 2, -H / 2);
   if (layersOn.base) {
     drawTiles(S);
+    drawRoadBase(S);
     ctx.fillStyle = "rgba(255,255,255,.18)"; ctx.fillRect(-W, -H, 3 * W, 3 * H);
   }
   // polígonos
@@ -338,6 +376,7 @@ function draw() {
     else if (f.t === "servicio") { if (view.z >= 16) halo(f.name, x, y, 11, "#334155", 700); }
     else if (f.t === "escenario") { if (view.z >= 16.2) halo("Escenario Papal", x, y - 14, 12, "#7f1d1d"); }
   }
+  drawRoadNames(S);
   drawDoors(S);
   drawMeasure(S);
   // puntos
@@ -421,16 +460,18 @@ cv.addEventListener("pointermove", (e) => {
     const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y), cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2, ang = Math.atan2(b.y - a.y, b.x - a.x);
     const w = toWorld(pinch.cx, pinch.cy);                       // punto del mapa bajo los dedos (antes)
     view.z = clamp(view.z + Math.log2(d / pinch.d), minZ, maxZ);
-    view.rot = angNorm(view.rot + angNorm(ang - pinch.ang));     // girar con dos dedos, como Google Maps
+    let da = angNorm(ang - pinch.ang), acc = (pinch.acc || 0) + da, on = pinch.on;
+    if (!on) { if (Math.abs(acc) > 0.3) { on = true; da = acc - Math.sign(acc) * 0.3; } else da = 0; }   // zona muerta de ~17°: no gira sin querer al hacer zoom
+    view.rot = angNorm(view.rot + da * 0.85);
     anchor(cx, cy, w); clampView(); updateNorth(); invalidate();
-    pinch = { d, cx, cy, ang }; setFollow(false);
+    pinch = { d, cx, cy, ang, acc, on }; setFollow(false);
   }
 });
 function endPtr(e) {
   const p = ptrs.get(e.pointerId); if (!p) return;
   ptrs.delete(e.pointerId);
   if (e.type === "pointerup" && !p.moved && performance.now() - p.t < 600) tap(p.x, p.y);
-  if (ptrs.size < 2 && pinch) { pinch = null; if (Math.abs(view.rot) < 0.07 && view.rot !== 0) animateTo({ cx: view.cx, cy: view.cy, z: view.z, rot: 0 }, 200); }   // imán al norte
+  if (ptrs.size < 2 && pinch) { pinch = null; if (Math.abs(view.rot) < 0.17 && view.rot !== 0) animateTo({ cx: view.cx, cy: view.cy, z: view.z, rot: 0 }, 200); }   // imán al norte
 }
 cv.addEventListener("pointerup", endPtr); cv.addEventListener("pointercancel", endPtr);
 cv.addEventListener("wheel", (e) => { e.preventDefault(); zoomAt(e.clientX, e.clientY, -e.deltaY * 0.0016); }, { passive: false });
@@ -476,14 +517,10 @@ function renderSheet() {
   let h = `<h3>${esc(titleOf(f))}</h3><div class="kv"><span class="badge" style="background:${T.color}">${esc(T.label)}</span>${esc(f.uso || "")}</div>`;
   if (f.t === "ps") h += `<div class="kv">Ubicación: <b>Cuadrante ${esc(f.where)}</b></div>`;
   else if (f.where) h += `<div class="kv">Ubicación: <b>${esc(f.where)}</b></div>`;
-  if (f.cap) h += `<div class="kv">Capacidad estimada: <b>≈ ${fmtN(f.cap)} personas</b> · ${fmtN(f.area)} m²</div>`;
-  else if (f.capref) h += `<div class="kv">Capacidad: <b>≈ ${fmtN(f.capref)} personas</b> (promedio del plano) · ${fmtN(f.area)} m²</div>`;
-  else if (f.area && f.t === "sector") h += `<div class="kv">Superficie: <b>${fmtN(f.area)} m²</b></div>`;
   if (pos) { const d = G.distance(pos.ll, f.ll); h += `<div class="kv">A <b>${G.fmtDist(d)}</b> de vos en línea recta</div>`; }
   if (stageF && f !== stageF && f.t !== "escenario") h += `<div class="kv">Al escenario: <b>${G.fmtDist(G.distance(f.ll, stageF.ll))}</b> en línea recta</div>`;
   if (f.t === "clero" || f.t === "autoridades") h += `<div class="kv small">Es el cuadrante completo, con todos sus subsectores.</div><div class="warn">Zona de acceso restringido.</div>`;
   if (f.t === "sector") h += `<div class="kv small">Parte del cuadrante ${esc((f.id.split(" · ")[0]) || "")}.</div>`;
-  if (f.nota) h += `<div class="warn">${esc(f.nota)} Revisá con el equipo de datos.</div>`;
   if (f.aprox) h += `<div class="kv small">Ubicación aproximada (±10–15 m), tomada del plano.</div>`;
   const kinds = { ps: ["se", "hosp"], se: ["ps", "hosp"], hosp: ["ps", "se"], acc: ["ps", "hosp"] }[f.t] || ["ps", "se"];
   const rows = kinds.map((k) => nearest(k, f.ll, f)).filter(Boolean);
@@ -827,6 +864,7 @@ function baseTileList() {
 }
 async function refreshOffState() {
   const el = $("#offState"), local = !/^https?:/.test(C.TILE_URL), msg = [];
+  if (!C.TILE_URL) { el.innerHTML = "App, plano, rutas y calles: " + (self.__swReady ? "<b>guardados ✔</b>" : "instalando…"); $("#btnDl").hidden = true; return; }
   msg.push(self.__swReady ? "App, plano y rutas: <b>guardados ✔</b>" : "App, plano y rutas: instalando…");
   try {
     const list = baseTileList(); let n = 0;
@@ -906,7 +944,7 @@ async function setReadyPill() {
   try {
     await navigator.serviceWorker.ready;
     let ok = true, msg = "Lista sin conexión ✔";
-    if (!/^https?:/.test(C.TILE_URL)) {
+    if (C.TILE_URL && !/^https?:/.test(C.TILE_URL)) {
       const r = await fetch("tiles/index.json").catch(() => null);
       if (r && r.ok) { const list = await r.json(); let n = 0; for (const p of list) if (await caches.match(new URL(p, location.href).href)) n++; ok = n >= list.length; if (!ok) msg = "Descargando mapa… " + Math.round((100 * n) / list.length) + "%"; }
     }
@@ -935,6 +973,7 @@ async function init() {
   try {
     const nd = await (await fetch("nav.json")).json();
     let roads = null; try { const rr = await fetch("roads.json"); if (rr.ok) roads = await rr.json(); } catch (e) {}
+    buildRoadBase(roads);
     nav = self.Nav.create(nd, feats, roads);
     DOORS = nd.doors || {};
   } catch (e) { toast("No se pudo cargar la red de pasillos: las rutas no estarán disponibles.", 7000); }
