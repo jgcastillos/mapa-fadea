@@ -142,7 +142,7 @@ function create(nd, feats, roads) {
     }
     return { path };
   })();
-  const SNAP_ROAD = 300;
+  const SNAP_ROAD = 200;
   // tramo EXTERIOR entre a y b: por calles reales si hay datos; si no, una línea recta orientativa.
   // Los empalmes (kind "link") son «calles falsas»: se dibujan casi transparentes.
   function outLegs(a, b, fallback) {
@@ -394,8 +394,9 @@ function create(nd, feats, roads) {
     for (let i = 0; i + 1 < wp.length; i++) legs.push({ a: wp[i], b: wp[i + 1], kind: "net" });
     if (plan.r.exit) legs.push(...outLegs(endXY, plan.r.exit.to, "exit"));
     const hasStreet = legs.some((l) => l.kind === "street");
-    if (dest.north) notes.push(hasStreet ? "Papa Fest: se sale por el Ingreso Norte y se sigue a pie por Circunvalación y las calles (cortadas al tránsito, peatonales). Recorrido de referencia." : "Papa Fest está fuera del predio FAdeA: se sale por el Ingreso Norte y se sigue a pie por Circunvalación (cortada al tránsito). Este mapa no trae las calles, así que el último tramo es solo una orientación en línea recta.");
+    if (dest.north) notes.push(hasStreet ? "Papa Fest: se sale por el Ingreso Norte y se sigue a pie por Circunvalación y las calles (cortadas al tránsito, peatonales). Recorrido de referencia." : "Papa Fest está fuera del predio FAdeA: se sale por el Ingreso Norte y se sigue a pie por Circunvalación (cortada al tránsito). Este mapa todavía no trae las calles, así que ese tramo no se dibuja.");
     else if (plan.r.exit && !hasStreet) notes.push("Tramo final por fuera del perímetro, en línea recta (terreno abierto): tomalo como orientación.");
+    if (legs.some((l) => l.kind === "out" || l.kind === "exit") && !hasStreet) notes.push("Sin calles cargadas en este mapa: no se dibuja el trayecto hasta el ingreso. La flecha indica la dirección en línea recta; para el camino real usá «Google Maps a pie hasta el ingreso» (con internet).");
     if (hasStreet && !dest.north) notes.push("Tramo por la vía pública: calles cortadas al tránsito durante el evento. Recorrido de referencia.");
     const gateName = gateKey ? gates[gateKey].name : "";
     const steps = makeSteps(legs, dest, gateName);

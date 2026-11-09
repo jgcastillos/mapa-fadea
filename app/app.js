@@ -19,7 +19,10 @@ const TYPES = {
   se:         { label: "Salida de emergencia",    color: "#15803d", layer: "se" },
   hosp:       { label: "Hospital",                color: "#7f1d1d", layer: "hosp" },
   acc:        { label: "Ingreso",                 color: "#0369a1", layer: "acc" },
-  pantalla:   { label: "Pantalla",                color: "#0e7490", layer: "ext" },
+  pantalla:   { label: "Pantalla y audio",        color: "#0e7490", layer: "pant" },
+  sacristia:  { label: "Sacristía",               color: "#dc2626", layer: "sac" },
+  bateria:    { label: "Batería de servicios",    color: "#92400e", layer: "bt" },
+  servicio:   { label: "Instalación",             color: "#64748b", layer: "serv" },
   ref:        { label: "Referencia",              color: "#6d28d9", layer: "ext" },
 };
 const LAYERS = [
@@ -29,12 +32,16 @@ const LAYERS = [
   { id: "se",   name: "Salidas de emergencia", color: "#15803d" },
   { id: "hosp", name: "Hospitales",            color: "#7f1d1d" },
   { id: "acc",  name: "Ingresos",              color: "#0369a1" },
-  { id: "ext",  name: "Pantallas y referencias", color: "#0e7490" },
+  { id: "sac",  name: "Sacristías (aprox.)",             color: "#dc2626" },
+  { id: "pant", name: "Pantallas y audio (aprox.)",      color: "#0e7490" },
+  { id: "bt",   name: "Baterías de servicios (aprox.)",  color: "#92400e" },
+  { id: "serv", name: "Baños, COE, descanso y más (a escala)", color: "#64748b" },
+  { id: "ext",  name: "Otras referencias",               color: "#6d28d9" },
   { id: "door", name: "Puertas de los patios",  color: "#f59e0b" },
   { id: "base", name: "Mapa base (calles)",    color: "#94a3b8" },
 ];
-const POLY_DRAW = ["ingreso", "frente", "cuadrante", "clero", "autoridades", "sector", "escenario"];
-const POLY_HIT = ["escenario", "sector", "clero", "autoridades", "cuadrante", "frente", "ingreso"];
+const POLY_DRAW = ["ingreso", "servicio", "frente", "cuadrante", "clero", "autoridades", "sector", "escenario"];
+const POLY_HIT = ["escenario", "servicio", "sector", "clero", "autoridades", "cuadrante", "frente", "ingreso"];
 const SEARCH_ALIAS = {
   ps: "ps sanitario sanitaria medico medica salud ambulancia primeros auxilios",
   se: "se salida emergencia evacuacion",
@@ -44,6 +51,10 @@ const SEARCH_ALIAS = {
   escenario: "escenario altar papal misa",
   clero: "clero sacerdotes",
   autoridades: "autoridades vip",
+  sacristia: "sacristia s",
+  pantalla: "pantalla audio pa tv",
+  bateria: "bateria servicios bt banos sanitarios",
+  servicio: "coe banos carpa descanso camion comando noria ambulancias",
 };
 
 /* ---------- Estado ---------- */
@@ -54,7 +65,7 @@ let measure = false, stageF = null;
 let minZ = 13, maxZ = 20, fitZ = 15, wbox = null, bounds = null;
 let sel = null, route = null, pendingFrom = null, nav = null, navView = null;
 let pos = null, watchId = null, follow = false, heading = null, compassOn = false;
-let layersOn = { cuad: 1, esc: 1, ps: 1, se: 1, hosp: 1, acc: 1, ext: 1, door: 1, base: 1 };
+let layersOn = { cuad: 1, esc: 1, ps: 1, se: 1, hosp: 1, acc: 1, sac: 1, pant: 1, bt: 1, serv: 1, ext: 1, door: 1, base: 1 };
 try { Object.assign(layersOn, JSON.parse(localStorage.getItem("papa.layers") || "{}")); } catch (e) {}
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -234,6 +245,7 @@ function polyStyle(f) {
     case "autoridades": return { fill: "rgba(59,130,246,.38)", stroke: "#1d4ed8", lw: 1.6 };
     case "frente": return { fill: "rgba(251,146,60,.32)", stroke: "#c2410c", lw: 1.3 };
     case "sector": return { fill: rgba(f.color || "#888888", 0.6), stroke: "rgba(0,0,0,.45)", lw: 1 };
+    case "servicio": return { fill: "rgba(148,163,184,.55)", stroke: "#475569", lw: 1.4 };
     case "ingreso": return { fill: "rgba(34,197,94,.18)", stroke: "#15803d", lw: 1.5, dash: [8, 6] };
     case "escenario": return { fill: "rgba(239,68,68,.6)", stroke: "#991b1b", lw: 2 };
   }
@@ -252,13 +264,14 @@ function halo(text, x, y, size, color, weight = 700) {
 }
 function pointVisible(f) {
   if (!layersOn[TYPES[f.t].layer]) return false;
-  if ((f.t === "ps" || f.t === "se") && view.z < 15.6) return false;
+  if ((f.t === "ps" || f.t === "se" || f.t === "sacristia") && view.z < 15.6) return false;
+  if ((f.t === "pantalla" || f.t === "bateria") && view.z < 16.2) return false;
   return true;
 }
 function drawPoint(f, S) {
   const [x, y] = scr(f.cw[0], f.cw[1], S);
   if (x < -30 || y < -30 || x > W + 30 || y > H + 30) return;
-  const big = f.t === "hosp" || f.t === "acc" || f.t === "ref" || f.t === "pantalla";
+  const big = f.t === "hosp" || f.t === "acc" || f.t === "ref";
   const r = big ? 14 : clamp(6 + (view.z - 15.6) * 2.2, 8, 13);
   ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.fillStyle = TYPES[f.t].color;
   if (f.t === "hosp") {
@@ -272,8 +285,8 @@ function drawPoint(f, S) {
       const a = r * 0.5; ctx.lineWidth = Math.max(2.2, r * 0.28);
       ctx.beginPath(); ctx.moveTo(x - a, y); ctx.lineTo(x + a, y); ctx.moveTo(x, y - a); ctx.lineTo(x, y + a); ctx.stroke();
     } else {
-      ctx.font = `800 ${Math.round(r * (f.t === "acc" || f.t === "ref" || f.t === "pantalla" ? 0.78 : 0.95))}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText(f.t === "se" ? "SE" : f.t === "pantalla" ? "TV" : f.t === "ref" ? "i" : "IN", x, y + 0.5);
+      ctx.font = `800 ${Math.round(r * (f.t === "acc" || f.t === "ref" ? 0.78 : f.t === "pantalla" || f.t === "bateria" ? 0.7 : 0.95))}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(f.t === "se" ? "SE" : f.t === "pantalla" ? "PA" : f.t === "sacristia" ? "S" : f.t === "bateria" ? "BT" : f.t === "ref" ? "i" : "IN", x, y + 0.5);
     }
   }
   if (big && view.z >= 14.2) {
@@ -322,12 +335,13 @@ function draw() {
       if (view.z >= 16.3) halo(f.t === "clero" ? "CLERO" : "AUTORIDADES", x, y + ls * 0.6, Math.max(9, ls * 0.55), TYPES[f.t].color);
     }
     else if (f.t === "sector") { if (view.z >= 17.2) halo(shortOf(f), x, y, 11, "#111", 600); }
+    else if (f.t === "servicio") { if (view.z >= 16) halo(f.name, x, y, 11, "#334155", 700); }
     else if (f.t === "escenario") { if (view.z >= 16.2) halo("Escenario Papal", x, y - 14, 12, "#7f1d1d"); }
   }
   drawDoors(S);
   drawMeasure(S);
   // puntos
-  for (const t of ["se", "ps", "acc", "hosp", "ref", "pantalla"]) for (const f of feats) if (f.t === t && pointVisible(f)) drawPoint(f, S);
+  for (const t of ["se", "ps", "acc", "hosp", "ref", "bateria", "pantalla", "sacristia"]) for (const f of feats) if (f.t === t && pointVisible(f)) drawPoint(f, S);
   if (sel && !sel.ring) {
     const [x, y] = scr(sel.cw[0], sel.cw[1], S);
     ctx.beginPath(); ctx.arc(x, y, 20, 0, 6.2832); ctx.lineWidth = 6; ctx.strokeStyle = "#fff"; ctx.stroke();
@@ -351,6 +365,7 @@ function drawRoute(S) {
   const r = route && route.res; if (!r || !r.ok) return;
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   for (const seg of r.segs) {
+    if (seg.kind === "out" || seg.kind === "exit") continue;   // nunca se dibuja una recta ficticia si no hay calles
     ctx.beginPath(); seg.pts.forEach((p, i) => { const q = G.project(p[0], p[1], 0), x = sx(q[0], S), y = sy(q[1], S); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
     if (seg.kind === "net" || seg.kind === "street") { ctx.setLineDash([]); ctx.lineWidth = 9; ctx.strokeStyle = "#fff"; ctx.stroke(); ctx.lineWidth = 5; ctx.strokeStyle = "#2563eb"; ctx.stroke(); }
     else { ctx.setLineDash([3, 9]); ctx.lineWidth = 2.5; ctx.strokeStyle = "rgba(37,99,235,.35)"; ctx.stroke(); ctx.setLineDash([]); }   // empalmes / tramos orientativos: casi transparentes
@@ -469,6 +484,7 @@ function renderSheet() {
   if (f.t === "clero" || f.t === "autoridades") h += `<div class="kv small">Es el cuadrante completo, con todos sus subsectores.</div><div class="warn">Zona de acceso restringido.</div>`;
   if (f.t === "sector") h += `<div class="kv small">Parte del cuadrante ${esc((f.id.split(" · ")[0]) || "")}.</div>`;
   if (f.nota) h += `<div class="warn">${esc(f.nota)} Revisá con el equipo de datos.</div>`;
+  if (f.aprox) h += `<div class="kv small">Ubicación aproximada (±10–15 m), tomada del plano.</div>`;
   const kinds = { ps: ["se", "hosp"], se: ["ps", "hosp"], hosp: ["ps", "se"], acc: ["ps", "hosp"] }[f.t] || ["ps", "se"];
   const rows = kinds.map((k) => nearest(k, f.ll, f)).filter(Boolean);
   if (rows.length) {
@@ -537,7 +553,7 @@ function fitRoute() {
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
   const o = originLL();
   const pts = [];
-  r.segs.forEach((s) => s.pts.forEach((p) => pts.push(p)));
+  r.segs.forEach((s) => s.kind !== "out" && s.kind !== "exit" && s.pts.forEach((p) => pts.push(p)));
   if (r.dist > 1500) { let acc = 0, k = pts.length - 1; while (k > 0 && acc < 1200) { acc += G.distance(pts[k], pts[k - 1]); k--; } pts.splice(0, k); }   // recorrido largo: encuadrar el final
   if (!pts.length) return;
   for (const p of pts) { const q = G.project(p[0], p[1], 0); x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }
@@ -692,7 +708,7 @@ document.querySelectorAll("#chips button[data-near]").forEach((b) => b.addEventL
 
 /* ---------- Modo noche y ahorro de batería ---------- */
 const opt = { dark: null, saver: false };
-try { const d = localStorage.getItem("papa.dark"); opt.dark = d === null ? (matchMedia("(prefers-color-scheme: dark)").matches ? 1 : 0) : +d; opt.saver = localStorage.getItem("papa.saver") === "1"; } catch (e) { opt.dark = 0; }
+try { const d = localStorage.getItem("papa.dark"); opt.dark = d === null ? 0 : +d; opt.saver = localStorage.getItem("papa.saver") === "1"; } catch (e) { opt.dark = 0; }
 function applyOpts() {
   document.body.classList.toggle("dark", !!opt.dark);
   const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = opt.dark ? "#0b1220" : "#1e3a8a";
@@ -914,7 +930,7 @@ async function init() {
   if (C.BACK_URL) { const b = $("#btnBack"); b.href = C.BACK_URL; b.textContent = "← " + (C.BACK_LABEL || "Volver"); b.hidden = false; }
   try { data = await (await fetch("data.json")).json(); }
   catch (e) { toast("No se pudieron cargar los datos. Abrí la app una vez con internet.", 8000); return; }
-  try { const ex = await (await fetch("extras.json")).json(); EXTRAS = (ex.items || []).filter((x) => x && x.id && x.pt && TYPES[x.t]).map((x) => Object.assign({ uso: x.nota || "" }, x)); } catch (e) {}
+  try { const ex = await (await fetch("extras.json")).json(); EXTRAS = (ex.items || []).filter((x) => x && x.id && (x.pt || x.ring) && TYPES[x.t]).map((x) => Object.assign({ uso: x.nota || "", aprox: 1 }, x, { nota: "" })); } catch (e) {}
   prep(); computeFit(); fitView(false); buildInfo(); setNet();
   try {
     const nd = await (await fetch("nav.json")).json();

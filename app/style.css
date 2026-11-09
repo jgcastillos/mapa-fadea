@@ -21,8 +21,8 @@ button{font:inherit;cursor:pointer;border:0;color:inherit}
 #results .t{flex:1;min-width:0}
 #results .t b{display:block}
 #results .t small,#results .d{color:var(--muted);font-size:12px}
-#status{display:flex;gap:6px;margin-top:6px}
-.pill{background:#0f172acc;color:#fff;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600}
+#status{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;align-items:center}
+.pill{white-space:nowrap;line-height:1.5;background:#0f172acc;color:#fff;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600}
 .pill.off{background:#b45309}
 .pill.ok{background:#15803dcc}
 
@@ -90,7 +90,7 @@ table.cap td:last-child{text-align:right;font-weight:700}
 #hudDist{font-size:17px;line-height:1.2}
 #hudTitle{font-size:13px;opacity:.9}
 
-.pill.inst{background:#f59e0b;color:#1c1917;border:0;font:inherit;font-size:12px;font-weight:800;cursor:pointer}
+.pill.act{background:#f59e0b;color:#1c1917;border:0;font:inherit;font-size:12px;font-weight:800;cursor:pointer;text-decoration:none}
 .overlay{position:fixed;inset:0;background:#0f172ad9;z-index:30;display:grid;place-items:center;padding:12px;overflow:auto}
 .overlay .card{background:#fff;border-radius:20px;max-width:440px;width:100%;padding:18px 18px 16px;max-height:96vh;overflow:auto;box-shadow:0 10px 40px #0008}
 .overlay .logo{display:block;width:min(260px,70%);margin:2px auto 8px}
@@ -132,3 +132,7 @@ body.dark .actions button.ghost,body.dark .near button{background:#1f2937;color:
 #where .big{font-size:18px;font-weight:800;margin:4px 0}
 #where pre{white-space:pre-wrap;background:#f1f5f9;color:#0f172a;border-radius:10px;padding:10px;font:13px/1.4 system-ui;margin:8px 0}
 .row.sw2{display:flex;align-items:center;gap:8px;margin:6px 0}
+
+.overlay .card .wide{position:sticky;bottom:0}
+.overlay .chk{display:flex;gap:8px;align-items:center;margin:10px 0 4px}
+.overlay .wide{width:100%}

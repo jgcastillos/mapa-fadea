@@ -1,5 +1,5 @@
 /* Service worker: guarda la app, los datos y los mosaicos del mapa para uso 100% offline. */
-const BUILD = "mw8ezt8o";                       // lo reemplaza tools/stamp.js en cada despliegue
+const BUILD = "mw8o6wzz";                       // lo reemplaza tools/stamp.js en cada despliegue
 const VERSION = "papa-shell-" + BUILD;
 const SHELL = ["./", "index.html", "style.css", "app.js", "geo.js", "nav.js", "config.js", "data.json", "nav.json", "extras.json",
   "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png",
